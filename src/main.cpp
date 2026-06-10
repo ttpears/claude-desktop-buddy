@@ -1063,14 +1063,9 @@ void loop() {
     if (tama.promptId[0]) {
       promptArrivedMs = millis();
       wake();
-      beep(1200, 80);   // alert chirp
-      // Jump to the approval screen no matter what was open — drawApproval
-      // only runs from drawHUD which only runs in DISP_NORMAL.
-      displayMode = DISP_NORMAL;
-      menuOpen = settingsOpen = resetOpen = false;
-      applyDisplayMode();
-      characterInvalidate();
-      if (buddyMode) buddyInvalidate();
+      beep(1200, 80);   // alert chirp — don't seize the screen. An open menu
+      // keeps the display (the dispatch shows the approval once it closes); on
+      // the home/info/pet screen the approval surfaces right away.
     }
   }
 
@@ -1127,16 +1122,7 @@ void loop() {
   }
   if (M5.BtnA.wasReleased()) {
     if (!btnALong && !swallowBtnA) {
-      if (inPrompt) {
-        char cmd[96];
-        snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"once\"}", tama.promptId);
-        sendCmd(cmd);
-        responseSent = true;
-        uint32_t tookS = (millis() - promptArrivedMs) / 1000;
-        statsOnApproval(tookS);
-        beep(2400, 60);
-        if (tookS < 5) triggerOneShot(P_HEART, 2000);
-      } else if (resetOpen) {
+      if (resetOpen) {
         beep(1800, 30);
         resetSel = (resetSel + 1) % RESET_N;
         resetConfirmIdx = 0xFF;
@@ -1146,6 +1132,15 @@ void loop() {
       } else if (menuOpen) {
         beep(1800, 30);
         menuSel = (menuSel + 1) % MENU_N;
+      } else if (inPrompt) {
+        char cmd[96];
+        snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"once\"}", tama.promptId);
+        sendCmd(cmd);
+        responseSent = true;
+        uint32_t tookS = (millis() - promptArrivedMs) / 1000;
+        statsOnApproval(tookS);
+        beep(2400, 60);
+        if (tookS < 5) triggerOneShot(P_HEART, 2000);
       } else {
         beep(1800, 30);
         displayMode = (displayMode + 1) % DISP_COUNT;
@@ -1160,14 +1155,7 @@ void loop() {
   if (M5.BtnB.wasPressed()) {
     if (swallowBtnB) { swallowBtnB = false; }
     else
-    if (inPrompt) {
-      char cmd[96];
-      snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"deny\"}", tama.promptId);
-      sendCmd(cmd);
-      responseSent = true;
-      statsOnDenial();
-      beep(600, 60);
-    } else if (resetOpen) {
+    if (resetOpen) {
       beep(2400, 30);
       applyReset(resetSel);
     } else if (settingsOpen) {
@@ -1176,6 +1164,13 @@ void loop() {
     } else if (menuOpen) {
       beep(2400, 30);
       menuConfirm();
+    } else if (inPrompt) {
+      char cmd[96];
+      snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"deny\"}", tama.promptId);
+      sendCmd(cmd);
+      responseSent = true;
+      statsOnDenial();
+      beep(600, 60);
     } else if (displayMode == DISP_INFO) {
       beep(2400, 30);
       infoPage = (infoPage + 1) % INFO_PAGES;
@@ -1241,22 +1236,28 @@ void loop() {
   if (pk && !lastPasskey) { wake(); beep(1800, 60); }
   lastPasskey = pk;
 
-  // Overlay (menu/settings/reset) open ⇒ shrink the pet into the top peek so the
-  // docked bottom-sheet menu never covers it (live preview while cycling pets).
-  // Closing restores peek to whatever the display mode wants. On either
-  // transition wipe the sprite — the pet renderers only repaint their small box,
-  // so stale full-size pet or panel pixels would otherwise ghost.
-  static bool prevOverlay = false;
-  bool overlayNow = menuOpen || settingsOpen || resetOpen;
-  if (overlayNow != prevOverlay) {
-    bool peek = overlayNow || displayMode != DISP_NORMAL;
+  // Lower-screen owner, by priority: an open menu/settings/reset overlay (2)
+  // outranks a pending approval (1), which outranks the normal/info/pet view
+  // (0). So an approval that lands mid-menu waits — the menu keeps the screen
+  // and the approval surfaces only once the overlay closes. Wipe the sprite on
+  // each ownership change: the pet renderers only repaint their small box, and
+  // the menu sheet, drawApproval (bottom 78px), and the HUD claim overlapping
+  // parts of the lower screen, so without a full clear their pixels bleed
+  // through. A menu peeks the pet up top for preview; an approval shows it
+  // full-size like the classic alert.
+  bool overlayNow  = menuOpen || settingsOpen || resetOpen;
+  bool approvalNow = tama.promptId[0];
+  uint8_t lowerOwner = overlayNow ? 2 : (approvalNow ? 1 : 0);
+  static uint8_t prevLowerOwner = 0;
+  if (lowerOwner != prevLowerOwner) {
+    bool peek = overlayNow || (lowerOwner == 0 && displayMode != DISP_NORMAL);
     characterSetPeek(peek);
     buddySetPeek(peek);
     spr.fillSprite(characterPalette().bg);
     characterInvalidate();
     if (buddyMode) buddyInvalidate();
   }
-  prevOverlay = overlayNow;
+  prevLowerOwner = lowerOwner;
 
   if (napping || screenOff || landscapeClock) {
     // skip sprite render — face-down, powered off, or landscape clock
@@ -1292,13 +1293,15 @@ void loop() {
     drawClock();
   } else if (!napping && !screenOff) {
     if (blePasskey()) drawPasskey();
-    else if (clocking) drawClock();
     else if (overlayNow) {
-      // Pet is rendered in peek above; dock the active menu sheet below it.
+      // Menu owns the screen; a pending approval waits until it closes. Pet is
+      // peeked above; dock the active menu sheet below it.
       if (resetOpen) drawReset();
       else if (settingsOpen) drawSettings();
       else drawMenu();
     }
+    else if (approvalNow) drawApproval();   // surfaces over home/info/pet/clock
+    else if (clocking) drawClock();
     else if (displayMode == DISP_INFO) drawInfo();
     else if (displayMode == DISP_PET) drawPet();
     else if (settings().hud) drawHUD();
