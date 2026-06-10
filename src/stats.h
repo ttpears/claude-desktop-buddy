@@ -263,6 +263,19 @@ inline void speciesIdxSave(uint8_t idx) {
   _prefs.end();
 }
 
+inline uint8_t brightLoad() {
+  _prefs.begin("buddy", true);
+  uint8_t v = _prefs.getUChar("s_bri", 3);   // default: level 3 of 0..4
+  _prefs.end();
+  return v;
+}
+
+inline void brightSave(uint8_t level) {
+  _prefs.begin("buddy", false);
+  _prefs.putUChar("s_bri", level);
+  _prefs.end();
+}
+
 inline Settings& settings() { return _settings; }
 
 inline const Stats& stats() { return _stats; }

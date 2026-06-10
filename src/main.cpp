@@ -43,7 +43,7 @@ unsigned long t = 0;
 // Menu
 bool    menuOpen    = false;
 uint8_t menuSel     = 0;
-uint8_t brightLevel = 4;           // 0..4 → ScreenBreath 20..100
+uint8_t brightLevel = 3;           // 0..4 → ScreenBreath 20..100; loaded from NVS in setup()
 bool    btnALong    = false;
 
 enum DisplayMode { DISP_NORMAL, DISP_PET, DISP_INFO, DISP_COUNT };
@@ -56,6 +56,7 @@ uint16_t lastLineGen = 0;
 char     lastPromptId[40] = "";
 uint32_t lastInteractMs = 0;
 bool     dimmed = false;
+bool     idleDim = false;
 bool     screenOff = false;
 bool     swallowBtnA = false;
 bool     swallowBtnB = false;
@@ -81,7 +82,9 @@ static void nextPet() {
   if (buddyMode) buddyInvalidate();
 }
 uint32_t wakeTransitionUntil = 0;
-const uint32_t SCREEN_OFF_MS = 30000;
+const uint32_t SCREEN_DIM_MS = 10000;   // dim backlight after 10s idle (battery)
+const uint32_t SCREEN_OFF_MS = 15000;   // full screen-off after 15s idle (battery)
+const uint8_t  SCREEN_DIM_BREATH = 20;  // ScreenBreath level for the pre-off dim
 
 bool     napping = false;
 uint32_t napStartMs = 0;
@@ -106,6 +109,7 @@ static void wake() {
     wakeTransitionUntil = millis() + 12000;
   }
   if (dimmed) { applyBrightness(); dimmed = false; }
+  if (idleDim) { applyBrightness(); idleDim = false; }
 }
 bool     responseSent = false;
 
@@ -156,6 +160,7 @@ static void applySetting(uint8_t idx) {
     case 0:
       brightLevel = (brightLevel + 1) % 5;
       applyBrightness();
+      brightSave(brightLevel);
       return;
     case 1: s.sound = !s.sound; break;
     case 2:
@@ -891,7 +896,7 @@ void drawPet() {
 void drawHUD() {
   if (tama.promptId[0]) { drawApproval(); return; }
   const Palette& p = characterPalette();
-  const int SHOW = 3, LH = 8, WIDTH = 21;
+  const int SHOW = 10, LH = 8, WIDTH = 21;
   const int AREA = SHOW * LH + 4;
   spr.fillRect(0, H - AREA, W, AREA, p.bg);
   spr.setTextSize(1);
@@ -944,6 +949,7 @@ void setup() {
   startBt();
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, HIGH);   // off
+  brightLevel = brightLoad();
   applyBrightness();
   lastInteractMs = millis();
   statsLoad();
@@ -1264,6 +1270,15 @@ void loop() {
   // millis() not the cached `now`: wake() runs after `now` is captured,
   // so now - lastInteractMs underflows when a button is held → flicker.
   // No auto-off on USB power — clock face wants to stay visible while charging.
+  // Pre-off dim: on battery, drop the backlight a few seconds before the full
+  // screen-off below. Saves backlight in the idle window + signals "sleeping".
+  // Skipped while napping (face-down owns its own ScreenBreath).
+  if (!screenOff && !idleDim && !napping && !inPrompt && !_onUsb
+      && millis() - lastInteractMs > SCREEN_DIM_MS) {
+    M5.Axp.ScreenBreath(SCREEN_DIM_BREATH);
+    idleDim = true;
+  }
+
   if (!screenOff && !inPrompt && !_onUsb
       && millis() - lastInteractMs > SCREEN_OFF_MS) {
     M5.Axp.SetLDO2(false);
