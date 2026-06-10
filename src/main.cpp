@@ -1186,6 +1186,14 @@ void loop() {
   if (pk && !lastPasskey) { wake(); beep(1800, 60); }
   lastPasskey = pk;
 
+  // One-shot full clear when an overlay (menu/settings/reset) just closed: the
+  // pet renderers only repaint their small ~90x50 box, so the larger menu panel
+  // would otherwise ghost in the persistent sprite. Wipe it + force a full repaint.
+  static bool prevOverlay = false;
+  bool overlayNow = menuOpen || settingsOpen || resetOpen;
+  if (prevOverlay && !overlayNow) { spr.fillSprite(characterPalette().bg); characterInvalidate(); }
+  prevOverlay = overlayNow;
+
   if (napping || screenOff || landscapeClock) {
     // skip sprite render — face-down, powered off, or landscape clock
     // (which draws direct-to-LCD below)
