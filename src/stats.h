@@ -182,10 +182,12 @@ struct Settings {
   bool wifi;     // placeholder — no WiFi stack linked yet, just stores the pref
   bool led;
   bool hud;
-  uint8_t clockRot;  // 0=auto 1=portrait 2=landscape
+  uint8_t clockRot;   // 0=auto 1=portrait 2=landscape
+  uint8_t screenOff;  // idle screen-off timeout: index 0=30s 1=1m 2=2m 3=5m
+  uint8_t dim;        // pre-off dim level: 0=off 1=dim 2=low
 };
 
-static Settings _settings = { true, true, false, true, true, 0 };
+static Settings _settings = { true, true, false, true, true, 0, 0, 1 };
 
 inline void settingsLoad() {
   _prefs.begin("buddy", true);
@@ -196,6 +198,10 @@ inline void settingsLoad() {
   _settings.hud      = _prefs.getBool("s_hud", true);
   _settings.clockRot = _prefs.getUChar("s_crot", 0);
   if (_settings.clockRot > 2) _settings.clockRot = 0;
+  _settings.screenOff = _prefs.getUChar("s_soff", 0);   // default 30s if absent
+  if (_settings.screenOff > 3) _settings.screenOff = 0;
+  _settings.dim = _prefs.getUChar("s_dim", 1);          // default "dim" if absent
+  if (_settings.dim > 2) _settings.dim = 1;
   _prefs.end();
 }
 
@@ -207,6 +213,8 @@ inline void settingsSave() {
   _prefs.putBool("s_led", _settings.led);
   _prefs.putBool("s_hud", _settings.hud);
   _prefs.putUChar("s_crot", _settings.clockRot);
+  _prefs.putUChar("s_soff", _settings.screenOff);
+  _prefs.putUChar("s_dim",  _settings.dim);
   _prefs.end();
 }
 

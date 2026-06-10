@@ -82,9 +82,16 @@ static void nextPet() {
   if (buddyMode) buddyInvalidate();
 }
 uint32_t wakeTransitionUntil = 0;
-const uint32_t SCREEN_DIM_MS = 10000;   // dim backlight after 10s idle (battery)
-const uint32_t SCREEN_OFF_MS = 15000;   // full screen-off after 15s idle (battery)
-const uint8_t  SCREEN_DIM_BREATH = 20;  // ScreenBreath level for the pre-off dim
+// Idle screen-off timeout (battery), selectable via settings().screenOff.
+const uint32_t SCREEN_OFF_OPTS[] = { 30000, 60000, 120000, 300000 };
+const char* const SCREEN_OFF_LBL[] = { "30s", "1m", "2m", "5m" };
+// Pre-off dim level, selectable via settings().dim. 0 = no dim step.
+const uint8_t SCREEN_DIM_OPTS[] = { 0, 20, 8 };
+const char* const SCREEN_DIM_LBL[] = { "off", "dim", "low" };
+static uint32_t screenOffMs() { return SCREEN_OFF_OPTS[settings().screenOff]; }
+static uint8_t  dimBreath()   { return SCREEN_DIM_OPTS[settings().dim]; }
+// Dim ~5s before screen-off (or 2/3 of the way for short timeouts).
+static uint32_t screenDimMs() { uint32_t o = screenOffMs(); return o > 5000 ? o - 5000 : o * 2 / 3; }
 
 bool     napping = false;
 uint32_t napStartMs = 0;
@@ -144,8 +151,8 @@ const uint8_t MENU_N = 6;
 
 bool    settingsOpen = false;
 uint8_t settingsSel  = 0;
-const char* settingsItems[] = { "brightness", "sound", "bluetooth", "wifi", "led", "transcript", "clock rot", "ascii pet", "reset", "back" };
-const uint8_t SETTINGS_N = 10;
+const char* settingsItems[] = { "brightness", "sound", "bluetooth", "wifi", "led", "transcript", "clock rot", "ascii pet", "screen off", "dim", "reset", "back" };
+const uint8_t SETTINGS_N = 12;
 
 bool    resetOpen = false;
 uint8_t resetSel  = 0;
@@ -175,8 +182,10 @@ static void applySetting(uint8_t idx) {
     case 5: s.hud = !s.hud; break;
     case 6: s.clockRot = (s.clockRot + 1) % 3; break;
     case 7: nextPet(); return;
-    case 8: resetOpen = true; resetSel = 0; resetConfirmIdx = 0xFF; return;
-    case 9: settingsOpen = false; characterInvalidate(); return;
+    case 8: s.screenOff = (s.screenOff + 1) % 4; break;
+    case 9: s.dim       = (s.dim + 1) % 3;       break;
+    case 10: resetOpen = true; resetSel = 0; resetConfirmIdx = 0xFF; return;
+    case 11: settingsOpen = false; characterInvalidate(); return;
   }
   settingsSave();
 }
@@ -283,6 +292,10 @@ static void drawSettings() {
       uint8_t total = buddySpeciesCount() + (gifAvailable ? 1 : 0);
       uint8_t pos   = buddyMode ? buddySpeciesIdx() + 1 : total;
       spr.printf("%u/%u", pos, total);
+    } else if (i == 8) {
+      spr.print(SCREEN_OFF_LBL[s.screenOff]);
+    } else if (i == 9) {
+      spr.print(SCREEN_DIM_LBL[s.dim]);
     }
   }
   drawMenuHints(p, mx, mw, my + mh - 12, "Next", "Change");
@@ -1289,14 +1302,14 @@ void loop() {
   // Pre-off dim: on battery, drop the backlight a few seconds before the full
   // screen-off below. Saves backlight in the idle window + signals "sleeping".
   // Skipped while napping (face-down owns its own ScreenBreath).
-  if (!screenOff && !idleDim && !napping && !inPrompt && !_onUsb
-      && millis() - lastInteractMs > SCREEN_DIM_MS) {
-    M5.Axp.ScreenBreath(SCREEN_DIM_BREATH);
+  if (!screenOff && !idleDim && !napping && !_onUsb && dimBreath() > 0
+      && millis() - lastInteractMs > screenDimMs()) {
+    M5.Axp.ScreenBreath(dimBreath());
     idleDim = true;
   }
 
-  if (!screenOff && !inPrompt && !_onUsb
-      && millis() - lastInteractMs > SCREEN_OFF_MS) {
+  if (!screenOff && !_onUsb
+      && millis() - lastInteractMs > screenOffMs()) {
     M5.Axp.SetLDO2(false);
     screenOff = true;
     // Idle on battery: halve the core clock. BLE keeps advertising/serving
