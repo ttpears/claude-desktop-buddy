@@ -52,8 +52,8 @@ inline bool dataConnected() {
 }
 
 inline bool dataBtActive() {
-  // Desktop's idle keepalive is ~10s; give it 1.5x headroom.
-  return _lastBtByteMs != 0 && (millis() - _lastBtByteMs) <= 15000;
+  // Idle keepalive is up to 30s; give it 1.5x headroom.
+  return _lastBtByteMs != 0 && (millis() - _lastBtByteMs) <= 45000;
 }
 
 inline const char* dataScenarioName() {

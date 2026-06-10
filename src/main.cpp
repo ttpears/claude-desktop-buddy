@@ -43,7 +43,7 @@ unsigned long t = 0;
 // Menu
 bool    menuOpen    = false;
 uint8_t menuSel     = 0;
-uint8_t brightLevel = 4;           // 0..4 → ScreenBreath 20..100
+uint8_t brightLevel = 2;           // 0..4 → ScreenBreath 20..100
 bool    btnALong    = false;
 
 enum DisplayMode { DISP_NORMAL, DISP_PET, DISP_INFO, DISP_COUNT };
@@ -81,7 +81,7 @@ static void nextPet() {
   if (buddyMode) buddyInvalidate();
 }
 uint32_t wakeTransitionUntil = 0;
-const uint32_t SCREEN_OFF_MS = 30000;
+const uint32_t SCREEN_OFF_MS = 15000;
 
 bool     napping = false;
 uint32_t napStartMs = 0;
@@ -1009,7 +1009,7 @@ void loop() {
   }
 
   // shake → dizzy + force scenario advance
-  if (now - lastShakeCheck > 50) {
+  if (now - lastShakeCheck > 200) {
     lastShakeCheck = now;
     if (!menuOpen && !screenOff && checkShake() && (int32_t)(now - oneShotUntil) >= 0) {
       wake();
@@ -1151,7 +1151,11 @@ void loop() {
                && !menuOpen && !settingsOpen && !resetOpen && !inPrompt
                && tama.sessionsRunning == 0 && tama.sessionsWaiting == 0
                && dataRtcValid() && _onUsb;
-  if (clocking) clockUpdateOrient();
+  static uint32_t lastOrientCheck = 0;
+  if (clocking && now - lastOrientCheck >= 200) {
+    lastOrientCheck = now;
+    clockUpdateOrient();
+  }
   else { clockOrient = 0; orientFrames = 0; paintedOrient = 0; }
   bool landscapeClock = clocking && clockOrient != 0;
 
@@ -1218,23 +1222,35 @@ void loop() {
   if (landscapeClock) {
     drawClock();
   } else if (!napping && !screenOff) {
-    if (blePasskey()) drawPasskey();
-    else if (clocking) drawClock();
-    else if (displayMode == DISP_INFO) drawInfo();
-    else if (displayMode == DISP_PET) drawPet();
-    else if (settings().hud) drawHUD();
-    if (resetOpen) drawReset();
-    else if (settingsOpen) drawSettings();
-    else if (menuOpen) drawMenu();
-    spr.pushSprite(0, 0);
+    // Throttle SPI display pushes: 5 FPS when idle (matches animation tick),
+    // full rate when active. Cuts SPI traffic by ~90% during idle.
+    static uint32_t lastPushMs = 0;
+    bool active = tama.sessionsRunning > 0 || tama.sessionsWaiting > 0
+               || menuOpen || settingsOpen || resetOpen || inPrompt;
+    bool pushDue = active || (now - lastPushMs >= 200);
+    if (pushDue) {
+      if (blePasskey()) drawPasskey();
+      else if (clocking) drawClock();
+      else if (displayMode == DISP_INFO) drawInfo();
+      else if (displayMode == DISP_PET) drawPet();
+      else if (settings().hud) drawHUD();
+      if (resetOpen) drawReset();
+      else if (settingsOpen) drawSettings();
+      else if (menuOpen) drawMenu();
+      spr.pushSprite(0, 0);
+      lastPushMs = now;
+    }
   }
 
   // Face-down nap: dim immediately, pause animations, accumulate sleep time.
   // Skipped during approval — you're holding it to read, not sleeping it.
   // Exit needs sustained not-down so IMU noise at the threshold doesn't
   // bounce brightness between 8 and full every few frames.
+  // Polled at 5Hz — plenty for gravity-based detection, saves IMU power.
   static int8_t faceDownFrames = 0;
-  if (!inPrompt) {
+  static uint32_t lastFaceDownCheck = 0;
+  if (!inPrompt && now - lastFaceDownCheck >= 200) {
+    lastFaceDownCheck = now;
     bool down = isFaceDown();
     if (down)       { if (faceDownFrames < 20) faceDownFrames++; }
     else            { if (faceDownFrames > -10) faceDownFrames--; }
@@ -1261,5 +1277,14 @@ void loop() {
     screenOff = true;
   }
 
-  delay(screenOff ? 100 : 16);
+  // Adaptive frame rate: fast when active, slow when idle, slowest when
+  // screen is off. Saves significant CPU power on battery.
+  if (screenOff || napping) {
+    delay(500);
+  } else if (tama.sessionsRunning == 0 && tama.sessionsWaiting == 0
+             && !menuOpen && !settingsOpen && !resetOpen && !inPrompt) {
+    delay(100);   // ~10 FPS idle — clock, pet animation, face-down check
+  } else {
+    delay(16);    // ~60 FPS active — responsive UI during sessions/prompts
+  }
 }
