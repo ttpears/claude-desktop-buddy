@@ -99,6 +99,7 @@ static void applyBrightness() { M5.Axp.ScreenBreath(20 + brightLevel * 20); }
 static void wake() {
   lastInteractMs = millis();
   if (screenOff) {
+    setCpuFrequencyMhz(160);   // restore full clock for smooth rendering
     M5.Axp.SetLDO2(true);
     applyBrightness();
     screenOff = false;
@@ -1259,7 +1260,13 @@ void loop() {
       && millis() - lastInteractMs > SCREEN_OFF_MS) {
     M5.Axp.SetLDO2(false);
     screenOff = true;
+    // Idle on battery: halve the core clock. BLE keeps advertising/serving
+    // at 80MHz (its controller clock is independent), so the bridge still
+    // delivers prompts — we just stop burning 160MHz on a 100ms idle tick.
+    setCpuFrequencyMhz(80);
   }
 
-  delay(screenOff ? 100 : 16);
+  // 30fps on-screen: the pet animates at 5fps and the clock at 1Hz, so 60fps
+  // only added redundant full-sprite SPI pushes. 100ms while the screen is off.
+  delay(screenOff ? 100 : 33);
 }
