@@ -901,7 +901,9 @@ void drawHUD() {
   spr.fillRect(0, H - AREA, W, AREA, p.bg);
   spr.setTextSize(1);
 
-  if (tama.lineGen != lastLineGen) { msgScroll = 0; lastLineGen = tama.lineGen; wake(); }
+  // Reset scroll on new output, but do NOT wake(): normal session output must
+  // not block sleep. Attention (prompt / waiting) wakes the screen elsewhere.
+  if (tama.lineGen != lastLineGen) { msgScroll = 0; lastLineGen = tama.lineGen; }
 
   if (tama.nLines == 0) {
     spr.setTextColor(p.text, p.bg);
@@ -1045,13 +1047,22 @@ void loop() {
     }
   }
 
+  // A session newly needing attention (waiting goes 0 -> >0) lights the screen
+  // once; it then sleeps on the idle timer if ignored, with the LED flashing
+  // (P_ATTENTION) as the persistent signal. Prompt arrivals wake above.
+  static uint8_t lastWaiting = 0;
+  if (tama.sessionsWaiting > 0 && lastWaiting == 0) wake();
+  lastWaiting = tama.sessionsWaiting;
+
   bool inPrompt = tama.promptId[0] && !responseSent;
 
   // Button-press wake. Track which button woke the screen so its full
   // press cycle (including long-press) is swallowed — you don't want
   // BtnA-to-wake to also cycle displayMode or open the menu.
   if (M5.BtnA.isPressed() || M5.BtnB.isPressed()) {
-    if (screenOff) {
+    // First press while off OR dimmed is "just wake" — swallow its action so it
+    // doesn't also open the menu. (idleDim is still set here; wake() clears it.)
+    if (screenOff || idleDim) {
       if (M5.BtnA.isPressed()) swallowBtnA = true;
       if (M5.BtnB.isPressed()) swallowBtnB = true;
     }
@@ -1152,6 +1163,11 @@ void loop() {
   // by the bridge. Pet sleeps underneath. Exit restores Y via
   // applyDisplayMode() so the next mode-switch isn't visually offset.
   clockRefreshRtc();   // 1Hz internal throttle; also caches _onUsb
+  // Just unplugged (USB -> battery): start the dim/off countdown fresh so we
+  // begin with the screen ON, not instantly past the timeout from idle USB time.
+  static bool wasOnUsb = true;
+  if (wasOnUsb && !_onUsb) lastInteractMs = millis();
+  wasOnUsb = _onUsb;
   // Show the clock when nothing is happening — bridge heartbeat alone
   // doesn't count as activity (it's the only way to get the RTC synced).
   bool clocking = displayMode == DISP_NORMAL
