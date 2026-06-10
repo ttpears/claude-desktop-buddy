@@ -87,6 +87,9 @@ extern const Species ROBOT_SPECIES;
 extern const Species RABBIT_SPECIES;
 extern const Species MUSHROOM_SPECIES;
 extern const Species CHONK_SPECIES;
+extern const Species FOX_SPECIES;
+extern const Species BEE_SPECIES;
+extern const Species HEDGEHOG_SPECIES;
 
 static const Species* SPECIES_TABLE[] = {
   &CAPYBARA_SPECIES, &DUCK_SPECIES, &GOOSE_SPECIES, &BLOB_SPECIES,
@@ -94,6 +97,7 @@ static const Species* SPECIES_TABLE[] = {
   &PENGUIN_SPECIES, &TURTLE_SPECIES, &SNAIL_SPECIES, &GHOST_SPECIES,
   &AXOLOTL_SPECIES, &CACTUS_SPECIES, &ROBOT_SPECIES, &RABBIT_SPECIES,
   &MUSHROOM_SPECIES, &CHONK_SPECIES,
+  &FOX_SPECIES, &BEE_SPECIES, &HEDGEHOG_SPECIES,
 };
 static const uint8_t N_SPECIES = sizeof(SPECIES_TABLE) / sizeof(SPECIES_TABLE[0]);
 static uint8_t currentSpeciesIdx = 0;
