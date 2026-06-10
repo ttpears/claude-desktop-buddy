@@ -248,6 +248,10 @@ static void applyReset(uint8_t idx) {
 // Footer hint row inside a menu panel: "<downLbl> ↓  <rightLbl> →" with
 // pixel triangles. Panels add MENU_HINT_H to height and call this at bottom.
 const int MENU_HINT_H = 14;
+// Bottom-sheet menus dock below the character peek. 70 matches PEEK_TOP in
+// character.cpp, so the pet's peek window (top 70px) and the sheet (70..H)
+// tile the screen with no overlap. The 10-item settings list fills it exactly.
+const int SHEET_TOP = 70;
 static void drawMenuHints(const Palette& p, int mx, int mw, int hy,
                           const char* downLbl = "A", const char* rightLbl = "B") {
   spr.drawFastHLine(mx + 6, hy - 4, mw - 12, p.textDim);
@@ -263,22 +267,36 @@ static void drawMenuHints(const Palette& p, int mx, int mw, int hy,
   spr.fillTriangle(x, hy, x, hy + 6, x + 5, hy + 3, p.textDim);
 }
 
+// Docked bottom-sheet frame shared by the three menus: fill SHEET_TOP..H and
+// draw the divider that separates the menu from the live pet peek above it.
+static void drawSheet(uint16_t border) {
+  spr.fillRect(0, SHEET_TOP, W, H - SHEET_TOP, PANEL);
+  spr.drawFastHLine(0, SHEET_TOP, W, border);
+  spr.setTextSize(1);
+}
+
+// Row pitch that keeps n rows + the hint footer inside the sheet. Comfortable
+// 14px until the list gets tall (settings = 12 items), then tightens to fit.
+static int sheetPitch(int n) {
+  int avail = (H - MENU_HINT_H) - (SHEET_TOP + 6);
+  int pitch = avail / n;
+  return pitch > 14 ? 14 : pitch;
+}
+
 static void drawSettings() {
   const Palette& p = characterPalette();
-  int mw = 118, mh = 16 + SETTINGS_N * 14 + MENU_HINT_H;
-  int mx = (W - mw) / 2, my = (H - mh) / 2;
-  spr.fillRoundRect(mx, my, mw, mh, 4, PANEL);
-  spr.drawRoundRect(mx, my, mw, mh, 4, p.textDim);
-  spr.setTextSize(1);
+  drawSheet(p.textDim);
+  int pitch = sheetPitch(SETTINGS_N);
   Settings& s = settings();
   bool vals[] = { s.sound, s.bt, s.wifi, s.led, s.hud };
   for (int i = 0; i < SETTINGS_N; i++) {
     bool sel = (i == settingsSel);
+    int y = SHEET_TOP + 6 + i * pitch;
     spr.setTextColor(sel ? p.text : p.textDim, PANEL);
-    spr.setCursor(mx + 6, my + 8 + i * 14);
+    spr.setCursor(6, y);
     spr.print(sel ? "> " : "  ");
     spr.print(settingsItems[i]);
-    spr.setCursor(mx + mw - 36, my + 8 + i * 14);
+    spr.setCursor(W - 36, y);
     spr.setTextColor(p.textDim, PANEL);
     if (i == 0) {
       spr.printf("%u/4", brightLevel);
@@ -298,27 +316,25 @@ static void drawSettings() {
       spr.print(SCREEN_DIM_LBL[s.dim]);
     }
   }
-  drawMenuHints(p, mx, mw, my + mh - 12, "Next", "Change");
+  drawMenuHints(p, 0, W, H - 12, "Next", "Change");
 }
 
 static void drawReset() {
   const Palette& p = characterPalette();
-  int mw = 118, mh = 16 + RESET_N * 14 + MENU_HINT_H;
-  int mx = (W - mw) / 2, my = (H - mh) / 2;
-  spr.fillRoundRect(mx, my, mw, mh, 4, PANEL);
-  spr.drawRoundRect(mx, my, mw, mh, 4, HOT);
-  spr.setTextSize(1);
+  drawSheet(HOT);
+  int pitch = sheetPitch(RESET_N);
   for (int i = 0; i < RESET_N; i++) {
     bool sel = (i == resetSel);
+    int y = SHEET_TOP + 6 + i * pitch;
     spr.setTextColor(sel ? p.text : p.textDim, PANEL);
-    spr.setCursor(mx + 6, my + 8 + i * 14);
+    spr.setCursor(6, y);
     spr.print(sel ? "> " : "  ");
     bool armed = (i == resetConfirmIdx) &&
                  (int32_t)(millis() - resetConfirmUntil) < 0;
     if (armed) spr.setTextColor(HOT, PANEL);
     spr.print(armed ? "really?" : resetItems[i]);
   }
-  drawMenuHints(p, mx, mw, my + mh - 12);
+  drawMenuHints(p, 0, W, H - 12);
 }
 
 void menuConfirm() {
@@ -340,20 +356,18 @@ void menuConfirm() {
 
 void drawMenu() {
   const Palette& p = characterPalette();
-  int mw = 118, mh = 16 + MENU_N * 14 + MENU_HINT_H;
-  int mx = (W - mw) / 2, my = (H - mh) / 2;
-  spr.fillRoundRect(mx, my, mw, mh, 4, PANEL);
-  spr.drawRoundRect(mx, my, mw, mh, 4, p.textDim);
-  spr.setTextSize(1);
+  drawSheet(p.textDim);
+  int pitch = sheetPitch(MENU_N);
   for (int i = 0; i < MENU_N; i++) {
     bool sel = (i == menuSel);
+    int y = SHEET_TOP + 6 + i * pitch;
     spr.setTextColor(sel ? p.text : p.textDim, PANEL);
-    spr.setCursor(mx + 6, my + 8 + i * 14);
+    spr.setCursor(6, y);
     spr.print(sel ? "> " : "  ");
     spr.print(menuItems[i]);
     if (i == 4) spr.print(dataDemo() ? "  on" : "  off");
   }
-  drawMenuHints(p, mx, mw, my + mh - 12);
+  drawMenuHints(p, 0, W, H - 12);
 }
 
 // Clock orientation: gravity along the in-plane X axis means the stick is
@@ -1227,12 +1241,21 @@ void loop() {
   if (pk && !lastPasskey) { wake(); beep(1800, 60); }
   lastPasskey = pk;
 
-  // One-shot full clear when an overlay (menu/settings/reset) just closed: the
-  // pet renderers only repaint their small ~90x50 box, so the larger menu panel
-  // would otherwise ghost in the persistent sprite. Wipe it + force a full repaint.
+  // Overlay (menu/settings/reset) open ⇒ shrink the pet into the top peek so the
+  // docked bottom-sheet menu never covers it (live preview while cycling pets).
+  // Closing restores peek to whatever the display mode wants. On either
+  // transition wipe the sprite — the pet renderers only repaint their small box,
+  // so stale full-size pet or panel pixels would otherwise ghost.
   static bool prevOverlay = false;
   bool overlayNow = menuOpen || settingsOpen || resetOpen;
-  if (prevOverlay && !overlayNow) { spr.fillSprite(characterPalette().bg); characterInvalidate(); }
+  if (overlayNow != prevOverlay) {
+    bool peek = overlayNow || displayMode != DISP_NORMAL;
+    characterSetPeek(peek);
+    buddySetPeek(peek);
+    spr.fillSprite(characterPalette().bg);
+    characterInvalidate();
+    if (buddyMode) buddyInvalidate();
+  }
   prevOverlay = overlayNow;
 
   if (napping || screenOff || landscapeClock) {
@@ -1270,12 +1293,15 @@ void loop() {
   } else if (!napping && !screenOff) {
     if (blePasskey()) drawPasskey();
     else if (clocking) drawClock();
+    else if (overlayNow) {
+      // Pet is rendered in peek above; dock the active menu sheet below it.
+      if (resetOpen) drawReset();
+      else if (settingsOpen) drawSettings();
+      else drawMenu();
+    }
     else if (displayMode == DISP_INFO) drawInfo();
     else if (displayMode == DISP_PET) drawPet();
     else if (settings().hud) drawHUD();
-    if (resetOpen) drawReset();
-    else if (settingsOpen) drawSettings();
-    else if (menuOpen) drawMenu();
     spr.pushSprite(0, 0);
   }
 
