@@ -1063,9 +1063,15 @@ void loop() {
   // A session newly needing attention (waiting goes 0 -> >0) lights the screen
   // once; it then sleeps on the idle timer if ignored, with the LED flashing
   // (P_ATTENTION) as the persistent signal. Prompt arrivals wake above.
+  // Gate on `connected` and freeze across disconnects: when data goes stale
+  // (dataConnected() flips after 30s) dataPoll zeroes sessionsWaiting, so the
+  // bridge's next update would otherwise look like a fresh 0->>0 edge and
+  // re-alert a session that was never dismissed.
   static uint8_t lastWaiting = 0;
-  if (tama.sessionsWaiting > 0 && lastWaiting == 0) wake();
-  lastWaiting = tama.sessionsWaiting;
+  if (tama.connected) {
+    if (tama.sessionsWaiting > 0 && lastWaiting == 0) wake();
+    lastWaiting = tama.sessionsWaiting;
+  }
 
   bool inPrompt = tama.promptId[0] && !responseSent;
 
