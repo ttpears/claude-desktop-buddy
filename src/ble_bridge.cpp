@@ -49,6 +49,7 @@ class RxCallbacks : public BLECharacteristicCallbacks {
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* s) override {
     connected = true;
+    BLEDevice::getAdvertising()->stop();
     Serial.println("[ble] connected");
   }
   void onDisconnect(BLEServer* s) override {

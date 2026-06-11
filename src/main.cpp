@@ -43,7 +43,7 @@ unsigned long t = 0;
 // Menu
 bool    menuOpen    = false;
 uint8_t menuSel     = 0;
-uint8_t brightLevel = 3;           // 0..4 → ScreenBreath 20..100; loaded from NVS in setup()
+uint8_t brightLevel = 2;           // 0..4 → ScreenBreath 20..100; loaded from NVS in setup()
 bool    btnALong    = false;
 
 enum DisplayMode { DISP_NORMAL, DISP_PET, DISP_INFO, DISP_COUNT };
@@ -83,8 +83,9 @@ static void nextPet() {
 }
 uint32_t wakeTransitionUntil = 0;
 // Idle screen-off timeout (battery), selectable via settings().screenOff.
-const uint32_t SCREEN_OFF_OPTS[] = { 30000, 60000, 120000, 300000 };
-const char* const SCREEN_OFF_LBL[] = { "30s", "1m", "2m", "5m" };
+// 15s leads as the aggressive low end (ToxicOrca's tuned default for battery).
+const uint32_t SCREEN_OFF_OPTS[] = { 15000, 30000, 60000, 120000, 300000 };
+const char* const SCREEN_OFF_LBL[] = { "15s", "30s", "1m", "2m", "5m" };
 // Pre-off dim level, selectable via settings().dim. 0 = no dim step.
 const uint8_t SCREEN_DIM_OPTS[] = { 0, 20, 8 };
 const char* const SCREEN_DIM_LBL[] = { "off", "dim", "low" };
@@ -182,7 +183,7 @@ static void applySetting(uint8_t idx) {
     case 5: s.hud = !s.hud; break;
     case 6: s.clockRot = (s.clockRot + 1) % 3; break;
     case 7: nextPet(); return;
-    case 8: s.screenOff = (s.screenOff + 1) % 4; break;
+    case 8: s.screenOff = (s.screenOff + 1) % 5; break;
     case 9: s.dim       = (s.dim + 1) % 3;       break;
     case 10: resetOpen = true; resetSel = 0; resetConfirmIdx = 0xFF; return;
     case 11: settingsOpen = false; characterInvalidate(); return;
@@ -1045,7 +1046,7 @@ void loop() {
   }
 
   // shake → dizzy + force scenario advance
-  if (now - lastShakeCheck > 50) {
+  if (now - lastShakeCheck > 200) {
     lastShakeCheck = now;
     if (!menuOpen && !screenOff && checkShake() && (int32_t)(now - oneShotUntil) >= 0) {
       wake();
@@ -1202,7 +1203,11 @@ void loop() {
                && !menuOpen && !settingsOpen && !resetOpen && !inPrompt
                && tama.sessionsRunning == 0 && tama.sessionsWaiting == 0
                && dataRtcValid() && _onUsb;
-  if (clocking) clockUpdateOrient();
+  static uint32_t lastOrientCheck = 0;
+  if (clocking && now - lastOrientCheck >= 200) {
+    lastOrientCheck = now;
+    clockUpdateOrient();
+  }
   else { clockOrient = 0; orientFrames = 0; paintedOrient = 0; }
   bool landscapeClock = clocking && clockOrient != 0;
 
@@ -1292,28 +1297,41 @@ void loop() {
   if (landscapeClock) {
     drawClock();
   } else if (!napping && !screenOff) {
-    if (blePasskey()) drawPasskey();
-    else if (overlayNow) {
-      // Menu owns the screen; a pending approval waits until it closes. Pet is
-      // peeked above; dock the active menu sheet below it.
-      if (resetOpen) drawReset();
-      else if (settingsOpen) drawSettings();
-      else drawMenu();
+    // Throttle SPI display pushes: 5 FPS when idle (matches animation tick),
+    // full rate when anything interactive is on screen. Cuts SPI traffic by
+    // ~90% during idle. Keep our richer draw stack (overlay/approval/menu peek).
+    static uint32_t lastPushMs = 0;
+    bool active = tama.sessionsRunning > 0 || tama.sessionsWaiting > 0
+               || overlayNow || approvalNow || inPrompt || blePasskey();
+    bool pushDue = active || (now - lastPushMs >= 200);
+    if (pushDue) {
+      if (blePasskey()) drawPasskey();
+      else if (overlayNow) {
+        // Menu owns the screen; a pending approval waits until it closes. Pet is
+        // peeked above; dock the active menu sheet below it.
+        if (resetOpen) drawReset();
+        else if (settingsOpen) drawSettings();
+        else drawMenu();
+      }
+      else if (approvalNow) drawApproval();   // surfaces over home/info/pet/clock
+      else if (clocking) drawClock();
+      else if (displayMode == DISP_INFO) drawInfo();
+      else if (displayMode == DISP_PET) drawPet();
+      else if (settings().hud) drawHUD();
+      spr.pushSprite(0, 0);
+      lastPushMs = now;
     }
-    else if (approvalNow) drawApproval();   // surfaces over home/info/pet/clock
-    else if (clocking) drawClock();
-    else if (displayMode == DISP_INFO) drawInfo();
-    else if (displayMode == DISP_PET) drawPet();
-    else if (settings().hud) drawHUD();
-    spr.pushSprite(0, 0);
   }
 
   // Face-down nap: dim immediately, pause animations, accumulate sleep time.
   // Skipped during approval — you're holding it to read, not sleeping it.
   // Exit needs sustained not-down so IMU noise at the threshold doesn't
   // bounce brightness between 8 and full every few frames.
+  // Polled at 5Hz — plenty for gravity-based detection, saves IMU power.
   static int8_t faceDownFrames = 0;
-  if (!inPrompt) {
+  static uint32_t lastFaceDownCheck = 0;
+  if (!inPrompt && now - lastFaceDownCheck >= 200) {
+    lastFaceDownCheck = now;
     bool down = isFaceDown();
     if (down)       { if (faceDownFrames < 20) faceDownFrames++; }
     else            { if (faceDownFrames > -10) faceDownFrames--; }
@@ -1353,7 +1371,15 @@ void loop() {
     setCpuFrequencyMhz(80);
   }
 
-  // 30fps on-screen: the pet animates at 5fps and the clock at 1Hz, so 60fps
-  // only added redundant full-sprite SPI pushes. 100ms while the screen is off.
-  delay(screenOff ? 100 : 33);
+  // Adaptive frame rate: fast when active, slow when idle, slowest when the
+  // screen is off — stacks with the 80MHz screen-off CPU drop above for
+  // significant battery savings. (wake() restores 160MHz.)
+  if (screenOff || napping) {
+    delay(500);
+  } else if (tama.sessionsRunning == 0 && tama.sessionsWaiting == 0
+             && !menuOpen && !settingsOpen && !resetOpen && !inPrompt) {
+    delay(100);   // ~10 FPS idle — clock, pet animation, face-down check
+  } else {
+    delay(16);    // ~60 FPS active — responsive UI during sessions/prompts
+  }
 }
