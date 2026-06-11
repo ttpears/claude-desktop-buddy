@@ -39,8 +39,12 @@ the same: accumulate bytes until you see `\n`, then parse.
 
 ## Heartbeat snapshot
 
-The desktop apps send a heartbeat snapshot whenever something changes, plus
-a keepalive every 10 seconds:
+A sender pushes a heartbeat snapshot whenever something changes, plus a
+keepalive on an idle timer. Cadence varies by sender: the desktop apps use a
+flat ~10s, while the multi-machine bridge is adaptive — ~10s while sessions
+are active, ~20s when idle — and always retransmits at least every 20s even
+when nothing changed, so the firmware never sees a gap longer than its
+disconnect window:
 
 ```json
 {
@@ -75,8 +79,9 @@ actively generating, `waiting > 0` means a permission prompt is blocking,
 and `total == 0` means nothing is open. `tokens_today` resets at local
 midnight if you want a daily counter.
 
-If you don't receive a snapshot for ~30 seconds, treat the connection as
-dead.
+If you don't receive a snapshot for ~45 seconds, treat the connection as
+dead. (This firmware uses a 45s tolerance to accommodate the bridge's slower
+idle keepalive; keep it comfortably above the sender's retransmit floor.)
 
 ## Turn events
 
