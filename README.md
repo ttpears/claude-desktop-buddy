@@ -1,5 +1,11 @@
 # claude-desktop-buddy
 
+[![CI](https://github.com/ttpears/claude-desktop-buddy/actions/workflows/ci.yml/badge.svg)](https://github.com/ttpears/claude-desktop-buddy/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/ttpears/claude-desktop-buddy?sort=semver)](https://github.com/ttpears/claude-desktop-buddy/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/ttpears/claude-desktop-buddy)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-ESP32%20%C2%B7%20M5StickC%20Plus-blue)](platformio.ini)
+[![Bridge](https://img.shields.io/badge/bridge-ttpears%2Fbuddy--bridge-orange)](https://github.com/ttpears/buddy-bridge)
+
 > **This is the [ttpears](https://github.com/ttpears) fork** of
 > [anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy).
 > It carries extra battery-life and UI work on top of upstream and ships
