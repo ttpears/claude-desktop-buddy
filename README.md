@@ -1,5 +1,14 @@
 # claude-desktop-buddy
 
+> **This is the [ttpears](https://github.com/ttpears) fork** of
+> [anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy).
+> It carries extra battery-life and UI work on top of upstream and ships
+> **flashable firmware images** in [Releases](https://github.com/ttpears/claude-desktop-buddy/releases).
+> It's the stick-side half of [**ttpears/buddy-bridge**](https://github.com/ttpears/buddy-bridge),
+> which drives this firmware from Claude **Code** sessions across many machines
+> (the desktop-app path below still works unchanged). Unofficial; not affiliated
+> with or endorsed by Anthropic.
+
 Claude for macOS and Windows can connect Claude Cowork and Claude Code to
 maker devices over BLE, so developers and makers can build hardware that
 displays permission prompts, recent messages, and other interactions. We've
@@ -29,7 +38,20 @@ your own pin layout.
 
 ## Flashing
 
-Install
+**From a release (no toolchain):** download the latest
+[release](https://github.com/ttpears/claude-desktop-buddy/releases/latest) and
+flash with [esptool](https://github.com/espressif/esptool) (verify against
+`SHA256SUMS` first):
+
+```bash
+# easiest — single merged image at 0x0
+esptool.py --chip esp32 write_flash 0x0 claude-desktop-buddy-<version>-merged.bin
+
+# or just the app image, keeping your existing bootloader/partitions
+esptool.py --chip esp32 write_flash 0x10000 claude-desktop-buddy-<version>-app.bin
+```
+
+**From source:** install
 [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/),
 then:
 
@@ -170,3 +192,13 @@ tools/           — generators and converters
 The BLE API is only available when the desktop apps are in developer mode
 (**Help → Troubleshooting → Enable Developer Mode**). It's intended for
 makers and developers and isn't an officially supported product feature.
+
+## Credits
+
+- **[@ToxicOrca](https://github.com/ToxicOrca)** — the **battery-life work** in
+  this fork: adaptive frame rate, IMU/display throttling, BLE stop-advertising on
+  connect, and the longer keepalive window. (Also the Android bridge app and
+  bridge-side battery/token work over in
+  [buddy-bridge](https://github.com/ttpears/buddy-bridge).)
+- Forked from [anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy);
+  original firmware and BLE protocol by Anthropic.
