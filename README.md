@@ -47,15 +47,25 @@ your own pin layout.
 **From a release (no toolchain):** download the latest
 [release](https://github.com/ttpears/claude-desktop-buddy/releases/latest) and
 flash with [esptool](https://github.com/espressif/esptool) (verify against
-`SHA256SUMS` first):
+`SHA256SUMS` first). Which image to use depends on whether the device is fresh
+or already paired:
 
 ```bash
-# easiest — single merged image at 0x0
+# FRESH / blank device — merged image at 0x0 (bootloader + partitions + app)
 esptool.py --chip esp32 write_flash 0x0 claude-desktop-buddy-<version>-merged.bin
 
-# or just the app image, keeping your existing bootloader/partitions
+# UPDATING an already-paired device — app image only, at 0x10000
 esptool.py --chip esp32 write_flash 0x10000 claude-desktop-buddy-<version>-app.bin
 ```
+
+> ⚠️ **The merged `0x0` image wipes NVS — your BLE bond and saved settings.**
+> `nvs` lives at `0x9000`, inside the range the merged image overwrites, so
+> flashing it forces a **re-pair** (and resets brightness/screen-off). To update
+> a stick you've already paired, flash the **`-app.bin` at `0x10000`** (or use
+> `pio run -t upload`) — it touches only the app partition and leaves the bond
+> intact. If you do flash the merged image, also **remove the stale bond on the
+> host** (e.g. Windows → Bluetooth → *Remove device*) before re-pairing, or the
+> old keys will make the link drop ~1s after every connect.
 
 **From source:** install
 [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/),
