@@ -1,5 +1,10 @@
 #pragma once
 #include <stdint.h>
+#include <M5GFX.h>
+
+// Render target: the shared M5Canvas sprite or M5.Display (landscape clock);
+// both derive from LovyanGFX.
+using GfxSurface = LovyanGFX;
 
 struct Palette {
   uint16_t body, bg, text, textDim, ink;
@@ -24,7 +29,6 @@ void characterClose();   // close GIF + clear loaded flag; FS stays mounted   //
 // header strip; off renders full-size centered in the upper home area.
 // Adaptive to actual canvas height — no padding required in source art.
 void characterSetPeek(bool peek);
-class TFT_eSPI;
-void characterRenderTo(TFT_eSPI* tgt, int cx, int cy);
+void characterRenderTo(GfxSurface* tgt, int cx, int cy);
 
 const Palette& characterPalette();
