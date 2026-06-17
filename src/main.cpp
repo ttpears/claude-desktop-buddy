@@ -153,6 +153,7 @@ static void sendCmd(const char* json) {
 }
 const uint8_t INFO_PAGES = 6;
 const uint8_t INFO_PG_BUTTONS = 1;
+const uint8_t INFO_PG_DEVICE = 3;   // battery %/V/mA + charge state
 const uint8_t INFO_PG_CREDITS = 5;
 
 void applyDisplayMode() {
@@ -167,8 +168,8 @@ void applyDisplayMode() {
   characterInvalidate();  // redraws character on next tick (text mode path)
 }
 
-const char* menuItems[] = { "settings", "turn off", "help", "about", "demo", "close" };
-const uint8_t MENU_N = 6;
+const char* menuItems[] = { "battery", "settings", "turn off", "help", "about", "demo", "close" };
+const uint8_t MENU_N = 7;
 
 bool    settingsOpen = false;
 uint8_t settingsSel  = 0;
@@ -360,18 +361,21 @@ static void drawReset() {
 
 void menuConfirm() {
   switch (menuSel) {
-    case 0: settingsOpen = true; menuOpen = false; settingsSel = 0; break;
-    case 1: M5.Axp.PowerOff(); break;
-    case 2:
-    case 3:
+    case 0:   // battery — jump to the DEVICE info page (%/V/mA/charge)
+    case 3:   // help
+    case 4:   // about
       menuOpen = false;
       displayMode = DISP_INFO;
-      infoPage = (menuSel == 2) ? INFO_PG_BUTTONS : INFO_PG_CREDITS;
+      infoPage = (menuSel == 0) ? INFO_PG_DEVICE
+               : (menuSel == 3) ? INFO_PG_BUTTONS
+                                : INFO_PG_CREDITS;
       applyDisplayMode();
       characterInvalidate();
       break;
-    case 4: dataSetDemo(!dataDemo()); break;
-    case 5: menuOpen = false; characterInvalidate(); break;
+    case 1: settingsOpen = true; menuOpen = false; settingsSel = 0; break;
+    case 2: M5.Axp.PowerOff(); break;
+    case 5: dataSetDemo(!dataDemo()); break;
+    case 6: menuOpen = false; characterInvalidate(); break;
   }
 }
 
@@ -386,7 +390,15 @@ void drawMenu() {
     spr.setCursor(6, y);
     spr.print(sel ? "> " : "  ");
     spr.print(menuItems[i]);
-    if (i == 4) spr.print(dataDemo() ? "  on" : "  off");
+    if (i == 0) {
+      // Live battery % inline so it's readable without leaving the menu.
+      // Same coarse linear estimate as the DEVICE page (reads high on USB).
+      int mv = (int)(M5.Axp.GetBatVoltage() * 1000);
+      int pct = (mv - 3200) / 10;
+      if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+      spr.printf("  %d%%", pct);
+    }
+    if (i == 5) spr.print(dataDemo() ? "  on" : "  off");
   }
   drawMenuHints(p, 0, W, H - 12);
 }
