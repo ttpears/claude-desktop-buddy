@@ -115,6 +115,13 @@ bool     napping = false;
 uint32_t napStartMs = 0;
 uint32_t promptArrivedMs = 0;
 
+// Battery-session tracking. The AXP192 coulomb counter integrates real draw in
+// hardware (through light sleep), so it gives a true average — unlike the
+// instantaneous current, which on the DEVICE page reflects screen-on draw.
+// Snapshot the counter when we go on battery; the page shows used→avg→runtime.
+uint32_t battSessStartMs = 0;        // 0 = on USB / no active battery session
+float    battSessStartCoulomb = 0;   // GetCoulombData() net mAh at unplug
+
 // Face-down = Z-axis dominant and negative. Debounced so a toss doesn't count.
 static bool isFaceDown() {
   float ax, ay, az;
@@ -682,6 +689,20 @@ void drawInfo() {
     ln("  battery  %d.%02dV", vBat_mV/1000, (vBat_mV%1000)/10);
     ln("  current  %+dmA", iBat_mA);
     if (usb) ln("  usb in   %d.%02dV", vBus_mV/1000, (vBus_mV%1000)/10);
+    // On battery: coulomb-integrated average draw + projected runtime. This is
+    // the true idle-inclusive figure; the line above is just the screen-on now.
+    if (!usb && battSessStartMs) {
+      uint32_t es = (millis() - battSessStartMs) / 1000;
+      float used = battSessStartCoulomb - M5.Axp.GetCoulombData();   // mAh out
+      if (used < 0) used = 0;
+      ln("  on batt  %luh%02lum", (unsigned long)(es / 3600), (unsigned long)((es / 60) % 60));
+      if (es > 30 && used > 0.05f) {
+        float avg = used * 3600.0f / es;                 // mA, hardware-integrated
+        ln("  avg draw %dmA", (int)(avg + 0.5f));
+        float rem = (pct / 100.0f) * 120.0f / avg;       // h left at this average
+        ln("  ~%dh%02dm left", (int)rem, (int)((rem - (int)rem) * 60));
+      }
+    }
     y += 8;
 
     spr.setTextColor(p.text, p.bg);
@@ -1005,6 +1026,9 @@ void drawHUD() {
 
 void setup() {
   M5.begin();
+  // Free to run — it rides the battery-current ADC M5.begin() already enabled.
+  // Powers the DEVICE page's average-draw / runtime estimate.
+  M5.Axp.EnableCoulombcounter();
 #ifdef BUDDY_BENCH
   // Disable battery charging so VBUS input current ≈ pure system draw — with
   // charging on, the ~85mA charge current masks the CPU/radio savings we want
@@ -1310,6 +1334,14 @@ void loop() {
   static bool wasOnUsb = true;
   if (wasOnUsb && !_onUsb) lastInteractMs = millis();
   wasOnUsb = _onUsb;
+  // Battery-session window for the coulomb-based avg/runtime on the DEVICE page.
+  // Reset on USB; (re)start on battery — covers both unplug and boot-on-battery.
+  if (_onUsb) {
+    battSessStartMs = 0;
+  } else if (battSessStartMs == 0) {
+    battSessStartMs = millis();
+    battSessStartCoulomb = M5.Axp.GetCoulombData();
+  }
   // Show the clock when nothing is happening — bridge heartbeat alone
   // doesn't count as activity (it's the only way to get the RTC synced).
   bool clocking = displayMode == DISP_NORMAL
