@@ -89,11 +89,15 @@ const char* const SCREEN_OFF_LBL[] = { "15s", "30s", "1m", "2m", "5m" };
 // Pre-off dim level, selectable via settings().dim. 0 = no dim step.
 const uint8_t SCREEN_DIM_OPTS[] = { 0, 20, 8 };
 const char* const SCREEN_DIM_LBL[] = { "off", "dim", "low" };
-// Core clock while the screen is off and idle. The BLE controller runs off the
-// independent 40MHz XTAL so the link survives well below 80MHz; tuned by
-// on-device current measurement. Overridable from the bench build.
+// Core clock while the screen is off and idle. Must stay >=80MHz: the ESP32
+// BT/WiFi radio needs the APB at >=80MHz to operate, and below it the BLE link
+// goes dark while screen-off — the connection drops and advertising stops
+// transmitting, so the bridge can't reach the stick (or wake it for prompts)
+// until it's manually woken. 80MHz is the radio-safe floor; the bulk of the
+// idle savings come from light sleep, not this downclock. Overridable from the
+// bench build.
 #ifndef SCREEN_OFF_CPU_MHZ
-#define SCREEN_OFF_CPU_MHZ 40
+#define SCREEN_OFF_CPU_MHZ 80
 #endif
 // When the screen is off (always on battery), light-sleep the idle gaps instead
 // of busy-waiting. The BLE controller's connection survives the ~100ms naps
@@ -1061,6 +1065,14 @@ void setup() {
 #ifndef BENCH_NO_BLE
   startBt();
 #endif
+  // Keep the 40MHz crystal powered through light sleep. The BLE controller's
+  // low-power clock is the main XTAL (CONFIG_BTDM_CTRL_LPCLK_SEL_MAIN_XTAL),
+  // so if the screen-off light-sleep path powers the XTAL down, the radio
+  // can't service connection events during the ~100ms naps — the link stays
+  // up but prompts don't reach us until the device is woken to full speed.
+  // (The old M5StickCPlus drivers held this domain on as a side effect; under
+  // M5Unified we must pin it explicitly.)
+  esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL, ESP_PD_OPTION_ON);
   brightLevel = brightLoad();
   applyBrightness();
   lastInteractMs = millis();
