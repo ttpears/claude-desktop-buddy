@@ -4,6 +4,7 @@
 #include <BLEUtils.h>
 #include <BLESecurity.h>
 #include <BLE2902.h>
+#include <esp_gap_ble_api.h>
 #include <Arduino.h>
 #include <string.h>
 
@@ -29,6 +30,8 @@ static volatile bool      connected = false;
 static volatile bool      secure = false;
 static volatile uint32_t  passkey = 0;
 static volatile uint16_t  mtu = 23;
+static esp_bd_addr_t      peerAddr;
+static volatile bool      havePeer = false;
 
 static void rxPush(const uint8_t* p, size_t n) {
   for (size_t i = 0; i < n; i++) {
@@ -52,11 +55,20 @@ class ServerCallbacks : public BLEServerCallbacks {
     BLEDevice::getAdvertising()->stop();
     Serial.println("[ble] connected");
   }
+  // Capture the peer so bleConnParams() can renegotiate the interval later.
+  // Start tight: a fresh connect means the user is interacting (pairing /
+  // first sync), so favor responsiveness. main.cpp relaxes it on screen-off.
+  void onConnect(BLEServer* s, esp_ble_gatts_cb_param_t* param) override {
+    memcpy(peerAddr, param->connect.remote_bda, sizeof(peerAddr));
+    havePeer = true;
+    bleConnParams(false);
+  }
   void onDisconnect(BLEServer* s) override {
     connected = false;
     secure = false;
     passkey = 0;
     mtu = 23;
+    havePeer = false;
     Serial.println("[ble] disconnected");
     // Restart advertising so the next client can find us.
     BLEDevice::startAdvertising();
@@ -137,6 +149,24 @@ void bleInit(const char* deviceName) {
 bool bleConnected() { return connected; }
 bool bleSecure()    { return secure; }
 uint32_t blePasskey() { return passkey; }
+
+void bleConnParams(bool relaxed) {
+  if (!connected || !havePeer) return;
+  esp_ble_conn_update_params_t cp = {};
+  memcpy(cp.bda, peerAddr, sizeof(cp.bda));
+  if (relaxed) {           // screen-off/idle: let the radio sleep through events
+    cp.min_int = 24;       // 30 ms (units of 1.25 ms)
+    cp.max_int = 48;       // 60 ms
+    cp.latency = 12;       // skip up to 12 idle events -> ~780 ms effective
+    cp.timeout = 600;      // 6 s supervision (> (1+latency)*max_int*1.25*2)
+  } else {                 // awake/active: snappy prompt + transcript delivery
+    cp.min_int = 6;        // 7.5 ms
+    cp.max_int = 18;       // 22.5 ms
+    cp.latency = 0;
+    cp.timeout = 400;      // 4 s
+  }
+  esp_ble_gap_update_conn_params(&cp);
+}
 
 void bleClearBonds() {
   int n = esp_ble_get_bond_device_num();

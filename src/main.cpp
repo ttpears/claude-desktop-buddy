@@ -164,6 +164,7 @@ static void wake() {
     applyBrightness();
     screenOff = false;
     wakeTransitionUntil = millis() + 12000;
+    bleConnParams(false);   // tight link while awake — snappy prompt delivery
   }
   if (dimmed) { applyBrightness(); dimmed = false; }
   if (idleDim) { applyBrightness(); idleDim = false; }
@@ -1288,6 +1289,7 @@ void loop() {
     } else {
       board::screenPower(false);
       screenOff = true;
+      bleConnParams(true);   // relax link for battery while screen is off
     }
   }
 
@@ -1562,6 +1564,7 @@ void loop() {
       && millis() - lastInteractMs > screenOffMs()) {
     board::screenPower(false);
     screenOff = true;
+    bleConnParams(true);   // relax link for battery while screen is off
     DBG("loop: screen ON -> OFF (entering light-sleep path)");
     // Idle on battery: drop the core clock hard. BLE keeps advertising/serving
     // (its controller clock is the independent 40MHz XTAL), so the bridge still
