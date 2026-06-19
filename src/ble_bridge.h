@@ -30,3 +30,8 @@ void bleClearBonds();
 size_t bleAvailable();
 int bleRead();
 size_t bleWrite(const uint8_t* data, size_t len);
+// Renegotiate the BLE connection interval. relaxed=true → long interval + slave
+// latency (idle/screen-off: saves radio power, ~1s delivery lag); relaxed=false
+// → short interval, no latency (active/awake: snappy prompt delivery). No-op if
+// not connected. Call on screen on/off transitions.
+void bleConnParams(bool relaxed);
