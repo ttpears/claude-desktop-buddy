@@ -99,12 +99,18 @@ const char* const SCREEN_DIM_LBL[] = { "off", "dim", "low" };
 #ifndef SCREEN_OFF_CPU_MHZ
 #define SCREEN_OFF_CPU_MHZ 80
 #endif
-// When the screen is off (always on battery), light-sleep the idle gaps instead
-// of busy-waiting. The BLE controller's connection survives the ~100ms naps
-// (validated by soak), so prompts still wake within a sleep period (<0.5s). The
-// CPU never tickless-idles on this core, so this is where the real savings are.
+// When the screen is off, light-sleep the idle gaps instead of busy-waiting —
+// DISABLED by default because it hard-resets this board. On the ESP32 (PICO-D4,
+// rev1.1) esp_light_sleep_start() arms the chip's RTC-WDT sleep failsafe, and
+// with the XTAL power domain pinned on for BLE-keepalive (see setup) the sleep
+// enter/exit no longer fits that budget: the RTC-WDT fires and reboots the chip
+// (reset reason 7 / rst:0x10 RTCWDT_RTC_RESET) a few seconds into screen-off, or
+// immediately when a prompt's wake work lands on a nap. THIS was the "reboots on
+// prompt while asleep" bug (verified on USB, so not a brownout). With it off the
+// idle path just downclocks to SCREEN_OFF_CPU_MHZ and is rock-solid. Re-enable
+// per-board via build flag only after validating sleep+BLE on that silicon.
 #ifndef SCREEN_OFF_USE_LIGHTSLEEP
-#define SCREEN_OFF_USE_LIGHTSLEEP 1
+#define SCREEN_OFF_USE_LIGHTSLEEP 0
 #endif
 #ifndef LIGHTSLEEP_US
 #define LIGHTSLEEP_US 100000   // 100ms wake cadence: polls buttons + serves BLE
@@ -137,13 +143,23 @@ static bool isFaceDown() {
 static void screenBreath(uint8_t v0_100) { board::setBrightness((uint8_t)((uint16_t)v0_100 * 255 / 100)); }
 static void applyBrightness() { screenBreath(20 + brightLevel * 20); }
 
+#ifdef BUDDY_DEBUG
+#include "esp_system.h"
+#define DBG(s) do { Serial.print("[DBG] "); Serial.println(s); Serial.flush(); } while (0)
+RTC_NOINIT_ATTR uint32_t g_lastReset, g_lastResetMagic;   // survive resets (not power-on)
+static int g_curReset = 0;
+#else
+#define DBG(s) do {} while (0)
+#endif
+
 static void wake() {
   lastInteractMs = millis();
   if (screenOff) {
     setCpuFrequencyMhz(160);   // restore full clock for smooth rendering
-#ifdef BUDDY_BENCH
-    Serial.updateBaudRate(115200);
+#if defined(BUDDY_BENCH) || defined(BUDDY_DEBUG)
+    Serial.updateBaudRate(115200);   // APB changed; keep serial readable
 #endif
+    DBG("wake: screen OFF -> ON");
     board::screenPower(true);
     applyBrightness();
     screenOff = false;
@@ -1035,10 +1051,23 @@ void drawHUD() {
 }
 
 void setup() {
+#ifdef BUDDY_DEBUG
+  Serial.begin(115200);
+  delay(150);
+  g_curReset = (int)esp_reset_reason();
+  if (g_curReset != ESP_RST_POWERON && g_curReset != ESP_RST_EXT) {
+    g_lastReset = g_curReset; g_lastResetMagic = 0xB0D1;          // latch a real crash reason
+  } else if (g_lastResetMagic != 0xB0D1) { g_lastReset = 0; }     // power-on: RTC mem is garbage
+  Serial.printf("\n\n[DBG] ===== BOOT ===== esp_reset_reason=%d last_crash=%lu  "
+    "(1=POWERON 2=EXT 3=SW 4=PANIC 5=INT_WDT 6=TASK_WDT 7=WDT 8=DEEPSLEEP 9=BROWNOUT)\n",
+    g_curReset, (unsigned long)g_lastReset);
+  Serial.flush();
+#endif
   // board::begin() runs M5.begin(), the speaker, the coulomb counter (free —
   // rides the always-on battery-current ADC), the LED pin, and the MPU6886
   // gyro-standby tweak where applicable.
   board::begin();
+  DBG("setup: after board::begin");
 #ifdef BUDDY_BENCH
   // Disable battery charging so VBUS input current ≈ pure system draw — with
   // charging on, the ~85mA charge current masks the CPU/radio savings we want
@@ -1073,6 +1102,7 @@ void setup() {
   // (The old M5StickCPlus drivers held this domain on as a side effect; under
   // M5Unified we must pin it explicitly.)
   esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL, ESP_PD_OPTION_ON);
+  DBG("setup: after pd_config");
   brightLevel = brightLoad();
   applyBrightness();
   lastInteractMs = millis();
@@ -1083,7 +1113,9 @@ void setup() {
 
   // BLE stays always-on; s.bt is stored as a preference only.
   spr.createSprite(W, H);
+  DBG("setup: after createSprite");
   characterInit(nullptr);  // scan /characters/ for whatever is installed
+  DBG("setup: after characterInit");
   gifAvailable = characterLoaded();
   // species NVS: 0..N-1 = ASCII species, 0xFF = use GIF (also the default,
   // so a fresh install lands on the GIF). With no GIF installed, 0xFF falls
@@ -1109,11 +1141,21 @@ void setup() {
       spr.drawString("a buddy appears", W/2, H/2 + 12);
     }
     spr.setTextDatum(TL_DATUM); spr.setTextSize(1);
+#ifdef BUDDY_DEBUG
+    { char rb[24]; snprintf(rb, sizeof(rb), "RST %d  LAST %lu", g_curReset, (unsigned long)g_lastReset);
+      spr.setTextColor(0xF800, p.bg); spr.setTextSize(2);
+      spr.drawString(rb, 2, 2); spr.setTextSize(1); }
+#endif
     spr.pushSprite(0, 0);
+#ifdef BUDDY_DEBUG
+    delay(3500);   // hold the reset-reason readout longer for battery debugging
+#else
     delay(1800);
+#endif
   }
 
   Serial.printf("buddy: %s\n", buddyMode ? "ASCII mode" : "GIF character loaded");
+  DBG("setup: DONE -> entering loop");
 }
 
 void loop() {
@@ -1201,6 +1243,7 @@ void loop() {
     lastPromptId[sizeof(lastPromptId)-1] = 0;
     responseSent = false;
     if (tama.promptId[0]) {
+      DBG("loop: PROMPT arrived -> wake()");
       promptArrivedMs = millis();
       wake();
       beep(1200, 80);   // alert chirp — don't seize the screen. An open menu
@@ -1331,10 +1374,11 @@ void loop() {
   // by the bridge. Pet sleeps underneath. Exit restores Y via
   // applyDisplayMode() so the next mode-switch isn't visually offset.
   clockRefreshRtc();   // 1Hz internal throttle; also caches _onUsb
-#ifdef BUDDY_BENCH
-  // Bench builds force the battery/idle power path while USB-tethered so the
-  // screen-off + downclock + sleep logic can be measured with the AXP192
-  // current meter. Without this the device just shows the charging clock.
+#if defined(BUDDY_BENCH) || defined(BUDDY_DEBUG)
+  // Bench/debug builds force the battery/idle power path while USB-tethered so
+  // the screen-off + downclock + sleep logic actually runs while serial stays
+  // connected — bench measures it with the AXP192 meter, debug reproduces a
+  // screen-off/wake crash. Without this the device just shows the charging clock.
   _onUsb = false;
 #endif
   // Just unplugged (USB -> battery): start the dim/off countdown fresh so we
@@ -1518,11 +1562,12 @@ void loop() {
       && millis() - lastInteractMs > screenOffMs()) {
     board::screenPower(false);
     screenOff = true;
+    DBG("loop: screen ON -> OFF (entering light-sleep path)");
     // Idle on battery: drop the core clock hard. BLE keeps advertising/serving
     // (its controller clock is the independent 40MHz XTAL), so the bridge still
     // delivers prompts — we just stop burning cycles on a slow idle tick.
     setCpuFrequencyMhz(SCREEN_OFF_CPU_MHZ);
-#ifdef BUDDY_BENCH
+#if defined(BUDDY_BENCH) || defined(BUDDY_DEBUG)
     Serial.updateBaudRate(115200);   // APB changed; keep telemetry readable
 #endif
   }
