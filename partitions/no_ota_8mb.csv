@@ -1,0 +1,9 @@
+# 8MB single-app (no-OTA) layout for the M5StickS3. Mirrors the framework's
+# no_ota.csv naming (app0/spiffs) but sized for 8MB flash: a 3MB app slot with
+# room to grow, and ~4.8MB of LittleFS for /characters GIFs.
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+app0,     app,  ota_0,   0x10000, 0x300000,
+spiffs,   data, spiffs,  0x310000,0x4E0000,
+coredump, data, coredump,0x7F0000,0x10000,

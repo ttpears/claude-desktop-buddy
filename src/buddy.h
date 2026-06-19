@@ -1,5 +1,10 @@
 #pragma once
 #include <stdint.h>
+#include <M5GFX.h>
+
+// Render target: the shared M5Canvas sprite or M5.Display (landscape clock);
+// both derive from LovyanGFX.
+using GfxSurface = LovyanGFX;
 
 // Multi-species ASCII buddy renderer. Each species lives in its own
 // src/buddies/<name>.cpp file and exposes 7 state functions matching
@@ -8,8 +13,7 @@
 void buddyInit();
 void buddyTick(uint8_t personaState);
 void buddyInvalidate();
-class TFT_eSPI;
-void buddyRenderTo(TFT_eSPI* tgt, uint8_t personaState);
+void buddyRenderTo(GfxSurface* tgt, uint8_t personaState);
 void buddySetSpecies(const char* name);
 void buddySetSpeciesIdx(uint8_t idx);
 void buddyNextSpecies();

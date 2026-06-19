@@ -1,4 +1,4 @@
-#include <M5StickCPlus.h>
+#include "board.h"
 #include <LittleFS.h>
 #include "esp_sleep.h"
 #include <stdarg.h>
@@ -6,7 +6,7 @@
 #include "data.h"
 #include "buddy.h"
 
-TFT_eSprite spr = TFT_eSprite(&M5.Lcd);
+M5Canvas spr = M5Canvas(&M5.Display);
 
 // Advertise as "Claude-XXXX" (last two BT MAC bytes) so multiple sticks
 // in one room are distinguishable in the desktop picker. Name persists in
@@ -24,7 +24,6 @@ static void startBt() {
 const int W = 135, H = 240;
 const int CX = W / 2;
 const int CY_BASE = 120;
-const int LED_PIN = 10;          // red LED, active-low
 
 // Colors used across multiple UI surfaces
 const uint16_t HOT   = 0xFA20;   // red-orange: warnings, impatience, deny
@@ -90,18 +89,28 @@ const char* const SCREEN_OFF_LBL[] = { "15s", "30s", "1m", "2m", "5m" };
 // Pre-off dim level, selectable via settings().dim. 0 = no dim step.
 const uint8_t SCREEN_DIM_OPTS[] = { 0, 20, 8 };
 const char* const SCREEN_DIM_LBL[] = { "off", "dim", "low" };
-// Core clock while the screen is off and idle. The BLE controller runs off the
-// independent 40MHz XTAL so the link survives well below 80MHz; tuned by
-// on-device current measurement. Overridable from the bench build.
+// Core clock while the screen is off and idle. Must stay >=80MHz: the ESP32
+// BT/WiFi radio needs the APB at >=80MHz to operate, and below it the BLE link
+// goes dark while screen-off — the connection drops and advertising stops
+// transmitting, so the bridge can't reach the stick (or wake it for prompts)
+// until it's manually woken. 80MHz is the radio-safe floor; the bulk of the
+// idle savings come from light sleep, not this downclock. Overridable from the
+// bench build.
 #ifndef SCREEN_OFF_CPU_MHZ
-#define SCREEN_OFF_CPU_MHZ 40
+#define SCREEN_OFF_CPU_MHZ 80
 #endif
-// When the screen is off (always on battery), light-sleep the idle gaps instead
-// of busy-waiting. The BLE controller's connection survives the ~100ms naps
-// (validated by soak), so prompts still wake within a sleep period (<0.5s). The
-// CPU never tickless-idles on this core, so this is where the real savings are.
+// When the screen is off, light-sleep the idle gaps instead of busy-waiting —
+// DISABLED by default because it hard-resets this board. On the ESP32 (PICO-D4,
+// rev1.1) esp_light_sleep_start() arms the chip's RTC-WDT sleep failsafe, and
+// with the XTAL power domain pinned on for BLE-keepalive (see setup) the sleep
+// enter/exit no longer fits that budget: the RTC-WDT fires and reboots the chip
+// (reset reason 7 / rst:0x10 RTCWDT_RTC_RESET) a few seconds into screen-off, or
+// immediately when a prompt's wake work lands on a nap. THIS was the "reboots on
+// prompt while asleep" bug (verified on USB, so not a brownout). With it off the
+// idle path just downclocks to SCREEN_OFF_CPU_MHZ and is rock-solid. Re-enable
+// per-board via build flag only after validating sleep+BLE on that silicon.
 #ifndef SCREEN_OFF_USE_LIGHTSLEEP
-#define SCREEN_OFF_USE_LIGHTSLEEP 1
+#define SCREEN_OFF_USE_LIGHTSLEEP 0
 #endif
 #ifndef LIGHTSLEEP_US
 #define LIGHTSLEEP_US 100000   // 100ms wake cadence: polls buttons + serves BLE
@@ -129,16 +138,29 @@ static bool isFaceDown() {
   return az < -0.7f && fabsf(ax) < 0.4f && fabsf(ay) < 0.4f;
 }
 
-static void applyBrightness() { M5.Axp.ScreenBreath(20 + brightLevel * 20); }
+// Backlight level on the historic AXP192 0..100 scale, remapped to M5GFX's
+// 0..255 so the tuned dim/breath values below carry over unchanged.
+static void screenBreath(uint8_t v0_100) { board::setBrightness((uint8_t)((uint16_t)v0_100 * 255 / 100)); }
+static void applyBrightness() { screenBreath(20 + brightLevel * 20); }
+
+#ifdef BUDDY_DEBUG
+#include "esp_system.h"
+#define DBG(s) do { Serial.print("[DBG] "); Serial.println(s); Serial.flush(); } while (0)
+RTC_NOINIT_ATTR uint32_t g_lastReset, g_lastResetMagic;   // survive resets (not power-on)
+static int g_curReset = 0;
+#else
+#define DBG(s) do {} while (0)
+#endif
 
 static void wake() {
   lastInteractMs = millis();
   if (screenOff) {
     setCpuFrequencyMhz(160);   // restore full clock for smooth rendering
-#ifdef BUDDY_BENCH
-    Serial.updateBaudRate(115200);
+#if defined(BUDDY_BENCH) || defined(BUDDY_DEBUG)
+    Serial.updateBaudRate(115200);   // APB changed; keep serial readable
 #endif
-    M5.Axp.SetLDO2(true);
+    DBG("wake: screen OFF -> ON");
+    board::screenPower(true);
     applyBrightness();
     screenOff = false;
     wakeTransitionUntil = millis() + 12000;
@@ -149,7 +171,7 @@ static void wake() {
 bool     responseSent = false;
 
 static void beep(uint16_t freq, uint16_t dur) {
-  if (settings().sound) M5.Beep.tone(freq, dur);
+  if (settings().sound) board::beep(freq, dur);
 }
 
 static void sendCmd(const char* json) {
@@ -380,7 +402,7 @@ void menuConfirm() {
       characterInvalidate();
       break;
     case 1: settingsOpen = true; menuOpen = false; settingsSel = 0; break;
-    case 2: M5.Axp.PowerOff(); break;
+    case 2: board::powerOff(); break;
     case 5: dataSetDemo(!dataDemo()); break;
     case 6: menuOpen = false; characterInvalidate(); break;
   }
@@ -400,10 +422,7 @@ void drawMenu() {
     if (i == 0) {
       // Live battery % inline so it's readable without leaving the menu.
       // Same coarse linear estimate as the DEVICE page (reads high on USB).
-      int mv = (int)(M5.Axp.GetBatVoltage() * 1000);
-      int pct = (mv - 3200) / 10;
-      if (pct < 0) pct = 0; if (pct > 100) pct = 100;
-      spr.printf("  %d%%", pct);
+      spr.printf("  %d%%", board::batteryPercent());
     }
     if (i == 5) spr.print(dataDemo() ? "  on" : "  off");
   }
@@ -422,16 +441,14 @@ static uint8_t paintedOrient = 0;
 // RTC and IMU share an I2C bus. Reading the RTC at 60fps starves the IMU
 // reads in clockUpdateOrient — orientation detection gets noisy. Cache the
 // time once per second; mood logic and drawClock both read from here.
-static RTC_TimeTypeDef _clkTm;
-static RTC_DateTypeDef _clkDt;
+static struct tm       _clk = {};
 uint32_t               _clkLastRead = 0;   // zeroed by data.h on time-sync
 static bool            _onUsb       = false;
 static void clockRefreshRtc() {
   if (millis() - _clkLastRead < 1000) return;
   _clkLastRead = millis();
-  _onUsb = M5.Axp.GetVBusVoltage() > 4.0f;
-  M5.Rtc.GetTime(&_clkTm);
-  M5.Rtc.GetDate(&_clkDt);
+  _onUsb = board::onUsb();
+  board::getClock(&_clk);
 }
 
 static void clockUpdateOrient() {
@@ -481,13 +498,13 @@ static const char* const MON[] = {
 };
 static const char* const DOW[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
 
-static uint8_t clockDow() { return _clkDt.WeekDay % 7; }
+static uint8_t clockDow() { return ((_clk.tm_wday % 7) + 7) % 7; }
 static void drawClock() {
   const Palette& p = characterPalette();
-  char hm[6]; snprintf(hm, sizeof(hm), "%02u:%02u", _clkTm.Hours, _clkTm.Minutes);
-  char ss[4]; snprintf(ss, sizeof(ss), ":%02u", _clkTm.Seconds);
-  uint8_t mi = (_clkDt.Month >= 1 && _clkDt.Month <= 12) ? _clkDt.Month - 1 : 0;
-  char dl[8]; snprintf(dl, sizeof(dl), "%s %02u", MON[mi], _clkDt.Date);
+  char hm[6]; snprintf(hm, sizeof(hm), "%02u:%02u", _clk.tm_hour, _clk.tm_min);
+  char ss[4]; snprintf(ss, sizeof(ss), ":%02u", _clk.tm_sec);
+  uint8_t mi = (_clk.tm_mon >= 0 && _clk.tm_mon <= 11) ? _clk.tm_mon : 0;
+  char dl[8]; snprintf(dl, sizeof(dl), "%s %02u", MON[mi], _clk.tm_mday);
 
   if (clockOrient == 0) {
     paintedOrient = 0;
@@ -512,10 +529,10 @@ static void drawClock() {
 
   // Seconds tick at 1Hz; redrawing 3 strings at 60fps is 180 SPI ops/sec
   // for nothing. Gate on the second changing (or full repaint).
-  if (repaint || _clkTm.Seconds != lastSec) {
-    lastSec = _clkTm.Seconds;
-    char wdl[12]; snprintf(wdl, sizeof(wdl), "%s %s %02u", DOW[clockDow()], MON[mi], _clkDt.Date);
-    char ssl[3]; snprintf(ssl, sizeof(ssl), "%02u", _clkTm.Seconds);
+  if (repaint || _clk.tm_sec != lastSec) {
+    lastSec = _clk.tm_sec;
+    char wdl[12]; snprintf(wdl, sizeof(wdl), "%s %s %02u", DOW[clockDow()], MON[mi], _clk.tm_mday);
+    char ssl[3]; snprintf(ssl, sizeof(ssl), "%02u", _clk.tm_sec);
     M5.Lcd.setTextDatum(MC_DATUM);
     M5.Lcd.setTextSize(3); M5.Lcd.setTextColor(p.text, p.bg);    M5.Lcd.drawString(hm, 170, 42);
     M5.Lcd.setTextSize(2); M5.Lcd.setTextColor(p.textDim, p.bg); M5.Lcd.drawString(ssl, 170, 72);
@@ -666,14 +683,17 @@ void drawInfo() {
   } else if (infoPage == 3) {
     _infoHeader(p, y, "DEVICE", infoPage);
 
-    int vBat_mV = (int)(M5.Axp.GetBatVoltage() * 1000);
-    int iBat_mA = (int)M5.Axp.GetBatCurrent();
-    int vBus_mV = (int)(M5.Axp.GetVBusVoltage() * 1000);
-    int pct = (vBat_mV - 3200) / 10;   // (v-3.2)/(4.2-3.2)*100 = (v-3.2)*100 = (mv-3200)/10
-    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
-    bool usb = vBus_mV > 4000;
-    bool charging = usb && iBat_mA > 1;
-    bool full = usb && vBat_mV > 4100 && iBat_mA < 10;
+    int vBat_mV = board::batteryMilliVolts();
+    int vBus_mV = board::usbMilliVolts();
+    int pct = board::batteryPercent();
+    bool usb = board::onUsb();
+    bool haveCur = board::hasBatteryCurrent();
+    int iBat_mA = haveCur ? board::batteryCurrentMa() : 0;
+    // With a battery-current sense (AXP192) we can tell charging from full;
+    // without one (M5PM1) fall back to the PMIC charge flag + a near-full %.
+    bool charging = usb && (haveCur ? iBat_mA > 1 : board::isCharging());
+    bool full = usb && (haveCur ? (vBat_mV > 4100 && iBat_mA < 10)
+                                : (!board::isCharging() && pct >= 99));
 
     spr.setTextColor(p.text, p.bg);
     spr.setTextSize(2);
@@ -687,13 +707,14 @@ void drawInfo() {
 
     spr.setTextColor(p.textDim, p.bg);
     ln("  battery  %d.%02dV", vBat_mV/1000, (vBat_mV%1000)/10);
-    ln("  current  %+dmA", iBat_mA);
+    if (haveCur) ln("  current  %+dmA", iBat_mA);
     if (usb) ln("  usb in   %d.%02dV", vBus_mV/1000, (vBus_mV%1000)/10);
     // On battery: coulomb-integrated average draw + projected runtime. This is
     // the true idle-inclusive figure; the line above is just the screen-on now.
-    if (!usb && battSessStartMs) {
+    // Only on boards with a hardware coulomb counter (AXP192).
+    if (board::hasCoulomb() && !usb && battSessStartMs) {
       uint32_t es = (millis() - battSessStartMs) / 1000;
-      float used = battSessStartCoulomb - M5.Axp.GetCoulombData();   // mAh out
+      float used = battSessStartCoulomb - board::coulombMah();   // mAh out
       if (used < 0) used = 0;
       ln("  on batt  %luh%02lum", (unsigned long)(es / 3600), (unsigned long)((es / 60) % 60));
       if (es > 30 && used > 0.05f) {
@@ -714,7 +735,7 @@ void drawInfo() {
     ln("  heap     %uKB", ESP.getFreeHeap() / 1024);
     ln("  bright   %u/4", brightLevel);
     ln("  bt       %s", settings().bt ? (dataBtActive() ? "linked" : "on") : "off");
-    ln("  temp     %dC", (int)M5.Axp.GetTempInAXP192());
+    if (board::hasInternalTemp()) ln("  temp     %dC", board::internalTempC());
 
   } else if (infoPage == 4) {
     _infoHeader(p, y, "BLUETOOTH", infoPage);
@@ -769,8 +790,13 @@ void drawInfo() {
     spr.setTextColor(p.textDim, p.bg);
     ln("hardware");
     y += 4;
+#if defined(BOARD_STICKS3)
+    ln("M5StickS3");
+    ln("ESP32-S3 + M5PM1");
+#else
     ln("M5StickC Plus");
     ln("ESP32 + AXP192");
+#endif
   }
 }
 
@@ -1025,45 +1051,58 @@ void drawHUD() {
 }
 
 void setup() {
-  M5.begin();
-  // Free to run — it rides the battery-current ADC M5.begin() already enabled.
-  // Powers the DEVICE page's average-draw / runtime estimate.
-  M5.Axp.EnableCoulombcounter();
+#ifdef BUDDY_DEBUG
+  Serial.begin(115200);
+  delay(150);
+  g_curReset = (int)esp_reset_reason();
+  if (g_curReset != ESP_RST_POWERON && g_curReset != ESP_RST_EXT) {
+    g_lastReset = g_curReset; g_lastResetMagic = 0xB0D1;          // latch a real crash reason
+  } else if (g_lastResetMagic != 0xB0D1) { g_lastReset = 0; }     // power-on: RTC mem is garbage
+  Serial.printf("\n\n[DBG] ===== BOOT ===== esp_reset_reason=%d last_crash=%lu  "
+    "(1=POWERON 2=EXT 3=SW 4=PANIC 5=INT_WDT 6=TASK_WDT 7=WDT 8=DEEPSLEEP 9=BROWNOUT)\n",
+    g_curReset, (unsigned long)g_lastReset);
+  Serial.flush();
+#endif
+  // board::begin() runs M5.begin(), the speaker, the coulomb counter (free —
+  // rides the always-on battery-current ADC), the LED pin, and the MPU6886
+  // gyro-standby tweak where applicable.
+  board::begin();
+  DBG("setup: after board::begin");
 #ifdef BUDDY_BENCH
   // Disable battery charging so VBUS input current ≈ pure system draw — with
   // charging on, the ~85mA charge current masks the CPU/radio savings we want
   // to measure. AXP192 reg 0x33 bit7 = charge enable.
-  { uint8_t r = M5.Axp.Read8bit(0x33); M5.Axp.Write1Byte(0x33, r & ~0x80); }
+  { uint8_t r = M5.Power.Axp192.readRegister8(0x33); M5.Power.Axp192.writeRegister8(0x33, r & ~0x80); }
 #endif
 #ifdef BENCH_BATMETER
   // Ground-truth battery meter: the AXP192 coulomb counter integrates real
   // discharge in hardware (through light sleep). On boot, dump the previous
   // run's result; the counter is cleared at the unplug edge in loop().
   LittleFS.begin(true);
-  M5.Axp.EnableCoulombcounter();
+  board::coulombEnable();
   { File f = LittleFS.open("/batlog.txt", "r");
     Serial.print("PREV-RUN ");
     if (f) { while (f.available()) Serial.write(f.read()); f.close(); }
     else Serial.println("(none)"); }
 #endif
   M5.Lcd.setRotation(0);
-  M5.Imu.Init();
-  // The buddy only ever reads the accelerometer (shake, face-down, clock
-  // orientation) — the gyro is the MPU6886's biggest draw and goes unused.
-  // Park its three axes in standby (PWR_MGMT_2 STBY_G bits) while leaving the
-  // accelerometer live. The IMU shares the internal Wire1 bus.
-  { Wire1.beginTransmission(0x68); Wire1.write(0x6C); Wire1.write(0x07); Wire1.endTransmission(); }
 #ifdef BUDDY_BENCH
   { float ax,ay,az; M5.Imu.getAccelData(&ax,&ay,&az);
     Serial.printf("IMU accel after gyro-standby: %.2f %.2f %.2f g (|a|=%.2f)\n",
       ax,ay,az, sqrtf(ax*ax+ay*ay+az*az)); }
 #endif
-  M5.Beep.begin();
 #ifndef BENCH_NO_BLE
   startBt();
 #endif
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);   // off
+  // Keep the 40MHz crystal powered through light sleep. The BLE controller's
+  // low-power clock is the main XTAL (CONFIG_BTDM_CTRL_LPCLK_SEL_MAIN_XTAL),
+  // so if the screen-off light-sleep path powers the XTAL down, the radio
+  // can't service connection events during the ~100ms naps — the link stays
+  // up but prompts don't reach us until the device is woken to full speed.
+  // (The old M5StickCPlus drivers held this domain on as a side effect; under
+  // M5Unified we must pin it explicitly.)
+  esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL, ESP_PD_OPTION_ON);
+  DBG("setup: after pd_config");
   brightLevel = brightLoad();
   applyBrightness();
   lastInteractMs = millis();
@@ -1074,7 +1113,9 @@ void setup() {
 
   // BLE stays always-on; s.bt is stored as a preference only.
   spr.createSprite(W, H);
+  DBG("setup: after createSprite");
   characterInit(nullptr);  // scan /characters/ for whatever is installed
+  DBG("setup: after characterInit");
   gifAvailable = characterLoaded();
   // species NVS: 0..N-1 = ASCII species, 0xFF = use GIF (also the default,
   // so a fresh install lands on the GIF). With no GIF installed, 0xFF falls
@@ -1100,16 +1141,25 @@ void setup() {
       spr.drawString("a buddy appears", W/2, H/2 + 12);
     }
     spr.setTextDatum(TL_DATUM); spr.setTextSize(1);
+#ifdef BUDDY_DEBUG
+    { char rb[24]; snprintf(rb, sizeof(rb), "RST %d  LAST %lu", g_curReset, (unsigned long)g_lastReset);
+      spr.setTextColor(0xF800, p.bg); spr.setTextSize(2);
+      spr.drawString(rb, 2, 2); spr.setTextSize(1); }
+#endif
     spr.pushSprite(0, 0);
+#ifdef BUDDY_DEBUG
+    delay(3500);   // hold the reset-reason readout longer for battery debugging
+#else
     delay(1800);
+#endif
   }
 
   Serial.printf("buddy: %s\n", buddyMode ? "ASCII mode" : "GIF character loaded");
+  DBG("setup: DONE -> entering loop");
 }
 
 void loop() {
   M5.update();
-  M5.Beep.update();
   t++;
   uint32_t now = millis();
 
@@ -1119,17 +1169,17 @@ void loop() {
   // back on the next boot via PREV-RUN. Integrates the light-sleep duty cycle.
   {
     static bool wasVbus = true; static uint32_t unplugMs = 0, lastLog = 0;
-    bool vbus = M5.Axp.GetVBusVoltage() > 4.0f;
-    if (wasVbus && !vbus) { M5.Axp.ClearCoulombcounter(); unplugMs = now; lastLog = now; }
+    bool vbus = board::onUsb();
+    if (wasVbus && !vbus) { board::coulombClear(); unplugMs = now; lastLog = now; }
     wasVbus = vbus;
     if (!vbus && unplugMs && now - lastLog >= 10000) {
       lastLog = now;
-      float dis = -M5.Axp.GetCoulombData();        // mAh discharged since unplug
+      float dis = -board::coulombMah();             // mAh discharged since unplug
       uint32_t el = (now - unplugMs) / 1000;        // seconds on battery
       float mA = el ? dis * 3600.0f / el : 0;
       File f = LittleFS.open("/batlog.txt", "w");
       if (f) { f.printf("avg=%.1fmA discharged=%.2fmAh elapsed=%lus vbat=%.2fV\n",
-                        mA, dis, (unsigned long)el, M5.Axp.GetBatVoltage()); f.close(); }
+                        mA, dis, (unsigned long)el, board::batteryMilliVolts() / 1000.0f); f.close(); }
     }
   }
 #endif
@@ -1152,9 +1202,9 @@ void loop() {
 #else
     float sum = 0; const int N = 200;
 #endif
-    for (int i = 0; i < N; i++) { sum += M5.Axp.GetVBusCurrent(); delay(2); }
+    for (int i = 0; i < N; i++) { sum += M5.Power.Axp192.getVBUSCurrent(); delay(2); }
     Serial.printf("PWR ibus_avg=%.1fmA vbat=%.2fV cpu=%uMHz so=%d nap=%d dim=%d ble=%d st=%s\n",
-      sum / N, M5.Axp.GetBatVoltage(), (unsigned)getCpuFrequencyMhz(),
+      sum / N, M5.Power.Axp192.getBatteryVoltage(), (unsigned)getCpuFrequencyMhz(),
       screenOff, napping, idleDim, bleConnected(), stateNames[activeState]);
   }
 #endif
@@ -1171,9 +1221,9 @@ void loop() {
 
   // LED: pulse on attention, otherwise off
   if (activeState == P_ATTENTION && settings().led) {
-    digitalWrite(LED_PIN, (now / 400) % 2 ? LOW : HIGH);
+    board::attentionLed((now / 400) % 2);
   } else {
-    digitalWrite(LED_PIN, HIGH);
+    board::attentionLed(false);
   }
 
   // shake → dizzy + force scenario advance
@@ -1193,6 +1243,7 @@ void loop() {
     lastPromptId[sizeof(lastPromptId)-1] = 0;
     responseSent = false;
     if (tama.promptId[0]) {
+      DBG("loop: PROMPT arrived -> wake()");
       promptArrivedMs = millis();
       wake();
       beep(1200, 80);   // alert chirp — don't seize the screen. An open menu
@@ -1229,13 +1280,13 @@ void loop() {
     wake();
   }
 
-  // AXP power button (left side): short-press toggles screen off.
-  // Long-press (6s) still powers off the device via AXP hardware.
-  if (M5.Axp.GetBtnPress() == 0x02) {
+  // Power button (left side): short-press toggles screen off.
+  // Long-press (6s) still powers off the device via PMIC hardware.
+  if (M5.BtnPWR.wasClicked()) {
     if (screenOff) {
       wake();
     } else {
-      M5.Axp.SetLDO2(false);
+      board::screenPower(false);
       screenOff = true;
     }
   }
@@ -1323,10 +1374,11 @@ void loop() {
   // by the bridge. Pet sleeps underneath. Exit restores Y via
   // applyDisplayMode() so the next mode-switch isn't visually offset.
   clockRefreshRtc();   // 1Hz internal throttle; also caches _onUsb
-#ifdef BUDDY_BENCH
-  // Bench builds force the battery/idle power path while USB-tethered so the
-  // screen-off + downclock + sleep logic can be measured with the AXP192
-  // current meter. Without this the device just shows the charging clock.
+#if defined(BUDDY_BENCH) || defined(BUDDY_DEBUG)
+  // Bench/debug builds force the battery/idle power path while USB-tethered so
+  // the screen-off + downclock + sleep logic actually runs while serial stays
+  // connected — bench measures it with the AXP192 meter, debug reproduces a
+  // screen-off/wake crash. Without this the device just shows the charging clock.
   _onUsb = false;
 #endif
   // Just unplugged (USB -> battery): start the dim/off countdown fresh so we
@@ -1340,7 +1392,7 @@ void loop() {
     battSessStartMs = 0;
   } else if (battSessStartMs == 0) {
     battSessStartMs = millis();
-    battSessStartCoulomb = M5.Axp.GetCoulombData();
+    battSessStartCoulomb = board::coulombMah();
   }
   // Show the clock when nothing is happening — bridge heartbeat alone
   // doesn't count as activity (it's the only way to get the RTC synced).
@@ -1371,7 +1423,7 @@ void loop() {
     bool weekend = (dow == 0 || dow == 6);
     bool friday  = (dow == 5);
 
-    uint8_t h = _clkTm.Hours;
+    uint8_t h = _clk.tm_hour;
     if (h >= 1 && h < 7)             activeState = P_SLEEP;
     else if (weekend)                activeState = (now/8000 % 6 == 0) ? P_HEART : P_SLEEP;
     else if (h < 9)                  activeState = (now/6000 % 4 == 0) ? P_IDLE  : P_SLEEP;
@@ -1485,7 +1537,7 @@ void loop() {
   if (!napping && faceDownFrames >= 15) {
     napping = true;
     napStartMs = now;
-    M5.Axp.ScreenBreath(8);
+    screenBreath(8);
     dimmed = true;
   } else if (napping && faceDownFrames <= -8) {
     napping = false;
@@ -1502,19 +1554,20 @@ void loop() {
   // Skipped while napping (face-down owns its own ScreenBreath).
   if (!screenOff && !idleDim && !napping && !_onUsb && dimBreath() > 0
       && millis() - lastInteractMs > screenDimMs()) {
-    M5.Axp.ScreenBreath(dimBreath());
+    screenBreath(dimBreath());
     idleDim = true;
   }
 
   if (!screenOff && !_onUsb
       && millis() - lastInteractMs > screenOffMs()) {
-    M5.Axp.SetLDO2(false);
+    board::screenPower(false);
     screenOff = true;
+    DBG("loop: screen ON -> OFF (entering light-sleep path)");
     // Idle on battery: drop the core clock hard. BLE keeps advertising/serving
     // (its controller clock is the independent 40MHz XTAL), so the bridge still
     // delivers prompts — we just stop burning cycles on a slow idle tick.
     setCpuFrequencyMhz(SCREEN_OFF_CPU_MHZ);
-#ifdef BUDDY_BENCH
+#if defined(BUDDY_BENCH) || defined(BUDDY_DEBUG)
     Serial.updateBaudRate(115200);   // APB changed; keep telemetry readable
 #endif
   }
@@ -1531,12 +1584,12 @@ void loop() {
     // First op on wake: the AXP192 current ADC kept sampling while the ESP32
     // was asleep, so its register still holds the sleep-state draw. Reading it
     // here — before the wake ramp does any work — captures the sleep floor.
-    { float i = M5.Axp.GetVBusCurrent();
+    { float i = M5.Power.Axp192.getVBUSCurrent();
       static float sum = 0; static uint32_t n = 0, last = 0;
       sum += i; n++;
       if (millis() - last >= 2000) { last = millis();
         Serial.printf("SLEEPFLOOR ibus=%.1fmA n=%lu vbat=%.2f cpu=%uMHz\n",
-          sum / n, (unsigned long)n, M5.Axp.GetBatVoltage(), (unsigned)getCpuFrequencyMhz());
+          sum / n, (unsigned long)n, M5.Power.Axp192.getBatteryVoltage(), (unsigned)getCpuFrequencyMhz());
         sum = 0; n = 0; }
     }
 #endif

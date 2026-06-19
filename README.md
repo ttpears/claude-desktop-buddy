@@ -3,7 +3,7 @@
 [![CI](https://github.com/ttpears/claude-desktop-buddy/actions/workflows/ci.yml/badge.svg)](https://github.com/ttpears/claude-desktop-buddy/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/ttpears/claude-desktop-buddy?sort=semver)](https://github.com/ttpears/claude-desktop-buddy/releases/latest)
 [![License: MIT](https://img.shields.io/github/license/ttpears/claude-desktop-buddy)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-ESP32%20%C2%B7%20M5StickC%20Plus-blue)](platformio.ini)
+[![Platform](https://img.shields.io/badge/platform-M5StickC%20Plus%20%C2%B7%20M5StickS3-blue)](platformio.ini)
 [![Bridge](https://img.shields.io/badge/bridge-ttpears%2Fbuddy--bridge-orange)](https://github.com/ttpears/buddy-bridge)
 
 > **This is the [ttpears](https://github.com/ttpears) fork** of
@@ -37,14 +37,57 @@ waiting, and lets you approve or deny right from the device.
 
 ## Hardware
 
-The firmware targets ESP32 with the Arduino framework. As written, it
-depends on the M5StickCPlus library for its display, IMU, and button
-drivers—so you'll need that board, or a fork that swaps those drivers for
-your own pin layout.
+The firmware runs on **two boards from one codebase**, built on the
+[M5Unified](https://github.com/m5stack/M5Unified) library:
+
+- **M5StickC Plus** — ESP32 + AXP192 PMIC. The original target. Its AXP192
+  coulomb counter powers the battery page's hardware-integrated average-draw
+  and runtime estimate.
+- **M5StickS3** — ESP32-S3 + M5PM1 PMIC, ES8311 speaker, native USB-C. It has
+  no RTC (the clock runs in software, synced from the bridge), no coulomb
+  counter (battery page shows a voltage-based estimate only), and no user LED
+  (the attention blink is a no-op).
+
+Each board is its own PlatformIO environment — `m5stickc-plus` and
+`m5sticks3`. The hardware that differs between them is isolated in
+`src/board.{h,cpp}` behind the `BOARD_STICKC_PLUS` / `BOARD_STICKS3` build
+flags, so porting to another ESP32/ESP32-S3 board mostly means adding a
+backend there.
 
 ## Flashing
 
-**From a release (no toolchain):** download the latest
+Pick the PlatformIO environment for your board: **`m5stickc-plus`** or
+**`m5sticks3`**. (With two environments you must pass `-e` — a bare
+`pio run -t upload` would try to build/flash both.)
+
+**From source:** install
+[PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/),
+then build + upload your board's env:
+
+```bash
+pio run -e m5stickc-plus -t upload   # M5StickC Plus
+pio run -e m5sticks3     -t upload   # M5StickS3
+```
+
+The M5StickS3 connects over **native USB-C** — it enumerates as a USB
+serial/JTAG port, no external USB-serial adapter needed. If GIF pets don't
+appear, upload the filesystem image once too:
+
+```bash
+pio run -e <env> -t uploadfs
+```
+
+Starting from a previously-flashed device, wipe it first:
+
+```bash
+pio run -e <env> -t erase && pio run -e <env> -t upload
+```
+
+Once running, you can also wipe everything from the device itself: **hold A
+→ settings → reset → factory reset → tap twice**.
+
+**From a release (no toolchain):** prebuilt images currently target the
+**M5StickC Plus** (ESP32). Download the latest
 [release](https://github.com/ttpears/claude-desktop-buddy/releases/latest) and
 flash with [esptool](https://github.com/espressif/esptool) (verify against
 `SHA256SUMS` first). Which image to use depends on whether the device is fresh
@@ -62,27 +105,14 @@ esptool.py --chip esp32 write_flash 0x10000 claude-desktop-buddy-<version>-app.b
 > `nvs` lives at `0x9000`, inside the range the merged image overwrites, so
 > flashing it forces a **re-pair** (and resets brightness/screen-off). To update
 > a stick you've already paired, flash the **`-app.bin` at `0x10000`** (or use
-> `pio run -t upload`) — it touches only the app partition and leaves the bond
-> intact. If you do flash the merged image, also **remove the stale bond on the
-> host** (e.g. Windows → Bluetooth → *Remove device*) before re-pairing, or the
-> old keys will make the link drop ~1s after every connect.
+> `pio run -e <env> -t upload`) — it touches only the app partition and leaves
+> the bond intact. If you do flash the merged image, also **remove the stale
+> bond on the host** (e.g. Windows → Bluetooth → *Remove device*) before
+> re-pairing, or the old keys will make the link drop ~1s after every connect.
 
-**From source:** install
-[PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/),
-then:
-
-```bash
-pio run -t upload
-```
-
-If you're starting from a previously-flashed device, wipe it first:
-
-```bash
-pio run -t erase && pio run -t upload
-```
-
-Once running, you can also wipe everything from the device itself: **hold A
-→ settings → reset → factory reset → tap twice**.
+> **M5StickS3:** prebuilt release images aren't published yet — build from
+> source above. (When they are, they'll be `--chip esp32s3` at the same
+> `0x0` / `0x10000` offsets.)
 
 ## Pairing
 
@@ -166,7 +196,8 @@ the sprite. `tools/prep_character.py` handles the resize: feed it source
 GIFs at any sizes and it produces a 96px-wide set where the character is the
 same scale in every state.
 
-The whole folder must fit under 1.8MB —
+The whole folder must fit the device's filesystem — ~1.8MB on the M5StickC
+Plus (4MB flash), with more headroom on the M5StickS3 (8MB flash).
 `gifsicle --lossy=80 -O3 --colors 64` typically cuts 40–60%.
 
 See `characters/bufo/` for a working example.
@@ -182,7 +213,7 @@ If you're iterating on a character and would rather skip the BLE round-trip,
 | `sleep`     | bridge not connected        | eyes closed, slow breathing |
 | `idle`      | connected, nothing urgent   | blinking, looking around    |
 | `busy`      | sessions actively running   | sweating, working           |
-| `attention` | approval pending            | alert, **LED blinks**       |
+| `attention` | approval pending            | alert, **LED blinks** (StickC Plus) |
 | `celebrate` | level up (every 50K tokens) | confetti, bouncing          |
 | `dizzy`     | you shook the stick         | spiral eyes, wobbling       |
 | `heart`     | approved in under 5s        | floating hearts             |

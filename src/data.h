@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include "ble_bridge.h"
 #include "xfer.h"
+#include "board.h"
 
 struct TamaState {
   uint8_t  sessionsTotal;
@@ -78,13 +79,9 @@ static void _applyJson(const char* line, TamaState* out) {
   if (!t.isNull() && t.size() == 2) {
     time_t local = (time_t)t[0].as<uint32_t>() + (int32_t)t[1];
     struct tm lt; gmtime_r(&local, &lt);
-    RTC_TimeTypeDef tm = { (uint8_t)lt.tm_hour, (uint8_t)lt.tm_min, (uint8_t)lt.tm_sec };
-    RTC_DateTypeDef dt = { (uint8_t)lt.tm_wday, (uint8_t)(lt.tm_mon + 1),
-                           (uint8_t)lt.tm_mday, (uint16_t)(lt.tm_year + 1900) };
-    M5.Rtc.SetTime(&tm);
-    M5.Rtc.SetDate(&dt);
+    board::setClock(&lt);
     extern uint32_t _clkLastRead;
-    _clkLastRead = 0;   // force re-read so _clkDt and _rtcValid agree
+    _clkLastRead = 0;   // force re-read so the cached time and _rtcValid agree
     _rtcValid = true;
     _lastLiveMs = millis();
     return;
@@ -131,8 +128,13 @@ struct _LineBuf {
   char buf[N];
   uint16_t len = 0;
   void feed(Stream& s, TamaState* out) {
-    while (s.available()) {
-      char c = s.read();
+    // Bounded + read()<0 guard: on the S3, Serial is USB-CDC and available()
+    // can report bytes that read() never delivers (-1). Without the break that
+    // spins forever and freezes the UI; the cap is belt-and-suspenders.
+    for (int guard = 0; s.available() > 0 && guard < 4096; guard++) {
+      int r = s.read();
+      if (r < 0) break;
+      char c = (char)r;
       if (c == '\n' || c == '\r') {
         if (len > 0) { buf[len]=0; if (buf[0]=='{') _applyJson(buf, out); len=0; }
       } else if (len < N-1) {
