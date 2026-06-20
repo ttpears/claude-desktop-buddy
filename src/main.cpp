@@ -1,6 +1,7 @@
 #include "board.h"
 #include <LittleFS.h>
 #include "esp_sleep.h"
+#include "esp_pm.h"
 #include <stdarg.h>
 #include "ble_bridge.h"
 #include "data.h"
@@ -938,12 +939,12 @@ static void drawPetStats(const Palette& p) {
   spr.printf("denied   %u", stats().denials);
   uint32_t nap = stats().napSeconds;
   spr.setCursor(6, y + 20);
-  spr.printf("napped   %luh%02lum", nap/3600, (nap/60)%60);
+  spr.printf("napped   %luh%02lum", (unsigned long)(nap/3600), (unsigned long)((nap/60)%60));
   auto tokFmt = [&](const char* label, uint32_t v, int yPx) {
     spr.setCursor(6, yPx);
-    if (v >= 1000000)   spr.printf("%s%lu.%luM", label, v/1000000, (v/100000)%10);
-    else if (v >= 1000) spr.printf("%s%lu.%luK", label, v/1000, (v/100)%10);
-    else                spr.printf("%s%lu", label, v);
+    if (v >= 1000000)   spr.printf("%s%lu.%luM", label, (unsigned long)(v/1000000), (unsigned long)((v/100000)%10));
+    else if (v >= 1000) spr.printf("%s%lu.%luK", label, (unsigned long)(v/1000), (unsigned long)((v/100)%10));
+    else                spr.printf("%s%lu", label, (unsigned long)v);
   };
   tokFmt("tokens   ", stats().tokens, y + 30);
   tokFmt("today    ", tama.tokensToday, y + 40);
@@ -1069,6 +1070,19 @@ void setup() {
   // gyro-standby tweak where applicable.
   board::begin();
   DBG("setup: after board::begin");
+#if defined(CONFIG_PM_ENABLE)
+  // esp_pm automatic light sleep: when the scheduler goes idle and no driver
+  // holds a power lock, IDF drops the frequency and light-sleeps, coordinating
+  // the radio + watchdogs across it — the supported path, vs the manual
+  // esp_light_sleep_start() loop that reboots this rev1.1 chip.
+  esp_pm_config_esp32_t pmcfg = {
+    .max_freq_mhz = 160,
+    .min_freq_mhz = 40,
+    .light_sleep_enable = true,
+  };
+  esp_err_t pmrc = esp_pm_configure(&pmcfg);
+  DBG(pmrc == ESP_OK ? "setup: esp_pm light sleep ON" : "setup: esp_pm_configure FAILED");
+#endif
 #ifdef BUDDY_BENCH
   // Disable battery charging so VBUS input current ≈ pure system draw — with
   // charging on, the ~85mA charge current masks the CPU/radio savings we want
@@ -1481,7 +1495,7 @@ void loop() {
       spr.setCursor(8, 90);
       spr.print("installing");
       spr.setCursor(8, 102);
-      spr.printf("%luK / %luK", done/1024, total/1024);
+      spr.printf("%luK / %luK", (unsigned long)(done/1024), (unsigned long)(total/1024));
       int barW = W - 16;
       spr.drawRect(8, 116, barW, 8, p.textDim);
       if (total > 0) {

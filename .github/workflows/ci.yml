@@ -23,4 +23,7 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
       - name: Build firmware
-        run: pio run
+        # Arduino (precompiled) envs only. The from-source `idf`/`idf-debug` envs
+        # pull ESP-IDF + the joltwallet/littlefs managed component and build
+        # everything from source (slow, network-dependent) — built locally, not CI.
+        run: pio run -e m5stickc-plus -e m5sticks3 -e bench -e debug

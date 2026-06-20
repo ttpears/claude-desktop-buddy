@@ -166,7 +166,8 @@ inline void statsOnWake() { _lastNapEndMs = millis(); _energyAtNap = 5; }
 inline uint8_t statsEnergyTier() {
   uint32_t hoursSince = (millis() - _lastNapEndMs) / 3600000;
   int8_t e = (int8_t)_energyAtNap - (int8_t)(hoursSince / 2);
-  if (e < 0) e = 0; if (e > 5) e = 5;
+  if (e < 0) e = 0;
+  if (e > 5) e = 5;
   return (uint8_t)e;
 }
 

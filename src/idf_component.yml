@@ -1,0 +1,7 @@
+## From-source (idf env) only: framework-espidf has no esp_littlefs component, so
+## the arduino LittleFS.cpp compiles to nothing (its body is #ifdef
+## CONFIG_LITTLEFS_PAGE_SIZE). Pull esp_littlefs from the IDF component registry
+## so the config + backend exist and LittleFS links for real. Ignored by the
+## precompiled arduino-only build.
+dependencies:
+  joltwallet/littlefs: ">=1.5.0,<1.11.0"
