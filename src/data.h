@@ -136,7 +136,7 @@ struct _LineBuf {
       if (r < 0) break;
       char c = (char)r;
       if (c == '\n' || c == '\r') {
-        if (len > 0) { buf[len]=0; if (buf[0]=='{') _applyJson(buf, out); len=0; }
+        if (len > 0) { buf[len]=0; if (buf[0]=='{') { _applyJson(buf, out); } len=0; }
       } else if (len < N-1) {
         buf[len++] = c;
       }

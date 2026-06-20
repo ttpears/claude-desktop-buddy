@@ -157,8 +157,11 @@ void bleConnParams(bool relaxed) {
   if (relaxed) {           // screen-off/idle: let the radio sleep through events
     cp.min_int = 24;       // 30 ms (units of 1.25 ms)
     cp.max_int = 48;       // 60 ms
-    cp.latency = 12;       // skip up to 12 idle events -> ~780 ms effective
-    cp.timeout = 600;      // 6 s supervision (> (1+latency)*max_int*1.25*2)
+    cp.latency = 8;        // skip up to 8 idle events -> ~540 ms effective. (CPU
+                           // light sleep via esp_pm does the heavy power saving
+                           // now, so less aggressive latency = fewer dropped links.)
+    cp.timeout = 1000;     // 10 s supervision — tolerate missed events across
+                           // sleep so the bridge doesn't drop+rescan as often
   } else {                 // awake/active: snappy prompt + transcript delivery
     cp.min_int = 6;        // 7.5 ms
     cp.max_int = 18;       // 22.5 ms
