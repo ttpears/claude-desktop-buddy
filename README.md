@@ -15,6 +15,12 @@
 > (the desktop-app path below still works unchanged). Unofficial; not affiliated
 > with or endorsed by Anthropic.
 
+**Build notes:** [I Took an M5StickC Plus from 2.3 Hours to About 12 Hours on
+Battery](https://hackyourworld.com/m5stickc-plus-battery-life-esp-pm-light-sleep/)
+walks through the failed 40 MHz clock, RTC-watchdog resets, BLE connection
+tuning, ESP-IDF power-management path, and the measurement limits behind the
+current source build.
+
 Claude for macOS and Windows can connect Claude Cowork and Claude Code to
 maker devices over BLE, so developers and makers can build hardware that
 displays permission prompts, recent messages, and other interactions. We've
